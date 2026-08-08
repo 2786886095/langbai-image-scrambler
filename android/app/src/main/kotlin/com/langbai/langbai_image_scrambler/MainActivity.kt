@@ -10,6 +10,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileNotFoundException
+import java.security.MessageDigest
 import java.util.UUID
 import kotlin.concurrent.thread
 
@@ -43,6 +45,12 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("name") ?: "image",
                 )
             }
+            "createUniqueDirectory" -> runInBackground(result) {
+                createUniqueDirectory(
+                    Uri.parse(call.argument<String>("treeUri")!!),
+                    call.argument<String>("desiredName") ?: "导出",
+                )
+            }
             "writeFileToTree" -> runInBackground(result) {
                 writeFileToTree(
                     Uri.parse(call.argument<String>("treeUri")!!),
@@ -50,7 +58,16 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("fileName") ?: "image.png",
                     call.argument<String>("sourcePath")!!,
                     call.argument<String>("mimeType") ?: "image/png",
-                ).toString()
+                )
+            }
+            "deleteDocumentIfHash" -> runInBackground(result) {
+                deleteDocumentIfHash(
+                    Uri.parse(call.argument<String>("uri")!!),
+                    call.argument<String>("sha256") ?: "",
+                )
+            }
+            "deleteEmptyDocument" -> runInBackground(result) {
+                deleteEmptyDocument(Uri.parse(call.argument<String>("uri")!!))
             }
             "saveDocument" -> saveDocument(call, result)
             else -> result.notImplemented()
@@ -83,6 +100,11 @@ class MainActivity : FlutterActivity() {
         pendingSaveSourcePath = call.argument<String>("sourcePath")
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+            )
             type = call.argument<String>("mimeType") ?: "image/png"
             putExtra(Intent.EXTRA_TITLE, call.argument<String>("suggestedName") ?: "image.png")
         }
@@ -122,10 +144,24 @@ class MainActivity : FlutterActivity() {
                 }
                 thread {
                     try {
+                        val flags = data.flags and
+                            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        try {
+                            contentResolver.takePersistableUriPermission(uri, flags)
+                        } catch (_: SecurityException) {
+                            // The current grant remains usable for this app session.
+                        }
                         contentResolver.openOutputStream(uri, "wt")!!.use { output ->
                             File(sourcePath).inputStream().use { input -> input.copyTo(output) }
                         }
-                        runOnUiThread { result?.success(uri.toString()) }
+                        runOnUiThread {
+                            result?.success(
+                                mapOf(
+                                    "uri" to uri.toString(),
+                                    "name" to queryDisplayName(uri),
+                                ),
+                            )
+                        }
                     } catch (error: Throwable) {
                         runOnUiThread { result?.error("save_failed", error.message, null) }
                     }
@@ -190,40 +226,115 @@ class MainActivity : FlutterActivity() {
         return target.absolutePath
     }
 
+    private fun createUniqueDirectory(treeUri: Uri, desiredName: String): Map<String, String> {
+        val parentId = DocumentsContract.getTreeDocumentId(treeUri)
+        var actualName = desiredName
+        var index = 1
+        while (findChild(treeUri, parentId, actualName) != null) {
+            actualName = "$desiredName（$index）"
+            index++
+        }
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
+        val created = DocumentsContract.createDocument(
+            contentResolver,
+            parentUri,
+            DocumentsContract.Document.MIME_TYPE_DIR,
+            actualName,
+        ) ?: error("无法建立资料夹：$actualName")
+        return mapOf("name" to actualName, "uri" to created.toString())
+    }
+
     private fun writeFileToTree(
         treeUri: Uri,
         relativeFolder: String,
         fileName: String,
         sourcePath: String,
         mimeType: String,
-    ): Uri {
+    ): Map<String, Any> {
         var parentId = DocumentsContract.getTreeDocumentId(treeUri)
+        val createdDirectories = mutableListOf<String>()
         for (segment in relativeFolder.split('/').filter { it.isNotBlank() }) {
-            parentId = findChild(treeUri, parentId, segment)?.first
-                ?: DocumentsContract.createDocument(
+            val existing = findChild(treeUri, parentId, segment)
+            if (existing != null) {
+                parentId = existing.first
+            } else {
+                val created = DocumentsContract.createDocument(
                     contentResolver,
                     DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId),
                     DocumentsContract.Document.MIME_TYPE_DIR,
                     segment,
-                )?.let { DocumentsContract.getDocumentId(it) }
-                ?: error("无法建立资料夹：$segment")
+                ) ?: error("无法建立资料夹：$segment")
+                parentId = DocumentsContract.getDocumentId(created)
+                createdDirectories.add(created.toString())
+            }
         }
 
-        val existing = findChild(treeUri, parentId, fileName)
-        val outputUri = if (existing != null) {
-            DocumentsContract.buildDocumentUriUsingTree(treeUri, existing.first)
-        } else {
-            DocumentsContract.createDocument(
-                contentResolver,
-                DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId),
-                mimeType,
-                fileName,
-            ) ?: error("无法建立输出图片：$fileName")
-        }
+        val actualName = uniqueChildName(treeUri, parentId, fileName)
+        val outputUri = DocumentsContract.createDocument(
+            contentResolver,
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId),
+            mimeType,
+            actualName,
+        ) ?: error("无法建立输出文件：$actualName")
         contentResolver.openOutputStream(outputUri, "wt")!!.use { output ->
             File(sourcePath).inputStream().use { input -> input.copyTo(output) }
         }
-        return outputUri
+        return mapOf(
+            "uri" to outputUri.toString(),
+            "name" to actualName,
+            "createdDirectories" to createdDirectories,
+        )
+    }
+
+    private fun uniqueChildName(treeUri: Uri, parentId: String, desiredName: String): String {
+        if (findChild(treeUri, parentId, desiredName) == null) return desiredName
+        val dot = desiredName.lastIndexOf('.')
+        val hasExtension = dot > 0
+        val base = if (hasExtension) desiredName.substring(0, dot) else desiredName
+        val extension = if (hasExtension) desiredName.substring(dot) else ""
+        var index = 1
+        while (true) {
+            val candidate = "$base（$index）$extension"
+            if (findChild(treeUri, parentId, candidate) == null) return candidate
+            index++
+        }
+    }
+
+    private fun deleteDocumentIfHash(uri: Uri, expectedHash: String): String {
+        return try {
+            val actualHash = contentResolver.openInputStream(uri)?.use { input ->
+                val digest = MessageDigest.getInstance("SHA-256")
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    if (read > 0) digest.update(buffer, 0, read)
+                }
+                digest.digest().joinToString("") { "%02x".format(it) }
+            } ?: return "missing"
+            if (!actualHash.equals(expectedHash, ignoreCase = true)) return "modified"
+            if (DocumentsContract.deleteDocument(contentResolver, uri)) "deleted" else "failed"
+        } catch (_: FileNotFoundException) {
+            "missing"
+        }
+    }
+
+    private fun deleteEmptyDocument(uri: Uri): Boolean {
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE)
+        val mime = contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        } ?: return false
+        if (mime != DocumentsContract.Document.MIME_TYPE_DIR) return false
+        val documentId = DocumentsContract.getDocumentId(uri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+        val hasChildren = contentResolver.query(
+            childrenUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+            null,
+            null,
+            null,
+        )?.use { it.moveToFirst() } ?: false
+        return !hasChildren && DocumentsContract.deleteDocument(contentResolver, uri)
     }
 
     private fun findChild(treeUri: Uri, parentId: String, name: String): Pair<String, String>? {
@@ -261,6 +372,19 @@ class MainActivity : FlutterActivity() {
             if (cursor.moveToFirst()) return cursor.getString(0) ?: "图片"
         }
         return "图片"
+    }
+
+    private fun queryDisplayName(uri: Uri): String {
+        contentResolver.query(
+            uri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getString(0) ?: "文件"
+        }
+        return "文件"
     }
 
     private fun isSupportedName(name: String): Boolean {

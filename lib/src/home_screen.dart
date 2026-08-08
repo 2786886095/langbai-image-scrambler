@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'app_controller.dart';
 import 'app_settings.dart';
 import 'app_strings.dart';
+import 'export_history_dialog.dart';
 import 'models.dart';
 import 'settings_dialog.dart';
 
@@ -82,6 +83,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               actions: [
+                IconButton(
+                  tooltip: strings['exportHistory'],
+                  onPressed: () => showExportHistoryDialog(context),
+                  icon: const Icon(Icons.history_rounded),
+                ),
                 IconButton(
                   tooltip: strings['settings'],
                   onPressed: () => showSettingsDialog(context),
@@ -174,6 +180,13 @@ class _Sidebar extends StatelessWidget {
                 label: strings['workspace'],
                 selected: true,
                 onTap: () {},
+              ),
+              const SizedBox(height: 8),
+              _SidebarItem(
+                icon: Icons.history_rounded,
+                label: strings['exportHistory'],
+                selected: false,
+                onTap: () => showExportHistoryDialog(context),
               ),
               const SizedBox(height: 8),
               _SidebarItem(
@@ -1326,9 +1339,30 @@ class _QueueCard extends StatelessWidget {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
     final textMode = controller.workspaceType == WorkspaceType.text;
+    final groupedTasks = <String, List<ImageTask>>{};
+    final looseTasks = <ImageTask>[];
+    for (final task in controller.tasks) {
+      if (task.sourceRootId.isEmpty) {
+        looseTasks.add(task);
+      } else {
+        groupedTasks.putIfAbsent(task.sourceRootId, () => []).add(task);
+      }
+    }
+    final queueItems = <Widget>[
+      for (final group in groupedTasks.values)
+        _FolderQueueGroup(
+          key: ValueKey('folder-group-${group.first.sourceRootId}'),
+          name: group.first.sourceRootName,
+          tasks: group,
+          strings: strings,
+          textMode: textMode,
+        ),
+      for (final task in looseTasks)
+        _TaskRow(task: task, strings: strings, textMode: textMode),
+    ];
     final listHeight = controller.tasks.isEmpty
         ? 260.0
-        : math.min(470.0, 82.0 * controller.tasks.length + 16);
+        : math.min(470.0, 76.0 * queueItems.length + 16);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -1383,13 +1417,9 @@ class _QueueCard extends StatelessWidget {
                   : Scrollbar(
                       child: ListView.separated(
                         padding: const EdgeInsets.only(right: 4),
-                        itemCount: controller.tasks.length,
+                        itemCount: queueItems.length,
                         separatorBuilder: (_, _) => const SizedBox(height: 8),
-                        itemBuilder: (context, index) => _TaskRow(
-                          task: controller.tasks[index],
-                          strings: strings,
-                          textMode: textMode,
-                        ),
+                        itemBuilder: (context, index) => queueItems[index],
                       ),
                     ),
             ),
@@ -1473,6 +1503,79 @@ class _QueueCard extends StatelessWidget {
                     : strings['startRestore'],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FolderQueueGroup extends StatelessWidget {
+  const _FolderQueueGroup({
+    super.key,
+    required this.name,
+    required this.tasks,
+    required this.strings,
+    required this.textMode,
+  });
+
+  final String name;
+  final List<ImageTask> tasks;
+  final AppStrings strings;
+  final bool textMode;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final completed = tasks
+        .where((task) => task.status == TaskStatus.completed)
+        .length;
+    return Material(
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.22),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          maintainState: true,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          leading: Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: scheme.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(Icons.folder_copy_outlined, color: scheme.primary),
+          ),
+          title: Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w900),
+          ),
+          subtitle: Text(
+            '${tasks.length} ${strings['folderItems']}'
+            '${completed > 0 ? ' · ${strings['folderCompleted']} $completed' : ''}',
+            style: TextStyle(
+              fontSize: 11,
+              color: scheme.onSurface.withValues(alpha: 0.65),
+            ),
+          ),
+          children: [
+            for (var index = 0; index < tasks.length; index++) ...[
+              _TaskRow(
+                task: tasks[index],
+                strings: strings,
+                textMode: textMode,
+              ),
+              if (index != tasks.length - 1) const SizedBox(height: 8),
+            ],
           ],
         ),
       ),

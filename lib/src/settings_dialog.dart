@@ -214,6 +214,116 @@ class _SettingsDialog extends StatelessWidget {
                     ),
                     const SizedBox(height: 16),
                     _SettingsSection(
+                      icon: Icons.history_toggle_off_rounded,
+                      title: strings['historySettings'],
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          DropdownButtonFormField<int>(
+                            initialValue: settings.historyRetentionDays,
+                            decoration: InputDecoration(
+                              labelText: strings['historyRetention'],
+                              prefixIcon: const Icon(Icons.schedule_rounded),
+                            ),
+                            items: [
+                              DropdownMenuItem(
+                                value: 1,
+                                child: Text(strings['retention1']),
+                              ),
+                              DropdownMenuItem(
+                                value: 7,
+                                child: Text(strings['retention7']),
+                              ),
+                              DropdownMenuItem(
+                                value: 30,
+                                child: Text(strings['retention30']),
+                              ),
+                              DropdownMenuItem(
+                                value: 90,
+                                child: Text(strings['retention90']),
+                              ),
+                              DropdownMenuItem(
+                                value: 0,
+                                child: Text(strings['retentionForever']),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                controller.setHistoryRetentionDays(value);
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            strings['historyRetentionDesc'],
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              height: 1.5,
+                              color: scheme.onSurface.withValues(alpha: 0.65),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _SettingsSection(
+                      icon: Icons.speed_rounded,
+                      title: strings['performance'],
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          DropdownButtonFormField<int>(
+                            initialValue: settings.processingConcurrency,
+                            decoration: InputDecoration(
+                              labelText: strings['concurrency'],
+                              prefixIcon: const Icon(
+                                Icons.dynamic_feed_rounded,
+                              ),
+                            ),
+                            items: [
+                              DropdownMenuItem(
+                                value: 0,
+                                child: Text(strings['concurrencyAuto']),
+                              ),
+                              DropdownMenuItem(
+                                value: 1,
+                                child: Text(strings['concurrency1']),
+                              ),
+                              DropdownMenuItem(
+                                value: 2,
+                                child: Text(strings['concurrency2']),
+                              ),
+                              DropdownMenuItem(
+                                value: 4,
+                                child: Text(strings['concurrency4']),
+                              ),
+                              DropdownMenuItem(
+                                value: 8,
+                                child: Text(strings['concurrency8']),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                controller.setProcessingConcurrency(value);
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${strings['concurrencyDesc']}\n'
+                            '${strings['concurrencyNow']}：'
+                            '${controller.effectiveProcessingConcurrency}',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              height: 1.5,
+                              color: scheme.onSurface.withValues(alpha: 0.65),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    _SettingsSection(
                       icon: Icons.system_update_alt_rounded,
                       title: strings['updates'],
                       child: Column(

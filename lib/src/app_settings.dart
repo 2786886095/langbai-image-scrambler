@@ -1,5 +1,10 @@
+import 'dart:io';
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'models.dart';
 
 enum AppLanguage { simplified, traditional }
 
@@ -12,6 +17,12 @@ class AppSettings extends ChangeNotifier {
     required this._theme,
     required this._askExportEveryTime,
     required this._checkUpdates,
+    required this._historyRetentionDays,
+    required this._processingConcurrency,
+    required this._lastWorkspaceType,
+    required this._lastProcessMode,
+    required this._lastAlgorithm,
+    required this._passwordProtectionEnabled,
     this.defaultExportPath,
     this.defaultExportTreeUri,
     this.defaultExportLabel,
@@ -24,12 +35,24 @@ class AppSettings extends ChangeNotifier {
   static const _defaultExportPathKey = 'default_export_path';
   static const _defaultExportTreeKey = 'default_export_tree_uri';
   static const _defaultExportLabelKey = 'default_export_label';
+  static const _historyRetentionKey = 'history_retention_days';
+  static const _processingConcurrencyKey = 'processing_concurrency';
+  static const _lastWorkspaceKey = 'last_workspace_type';
+  static const _lastProcessModeKey = 'last_process_mode';
+  static const _lastAlgorithmKey = 'last_algorithm';
+  static const _passwordProtectionKey = 'password_protection_enabled';
 
   final SharedPreferences _preferences;
   AppLanguage _language;
   AppThemePreference _theme;
   bool _askExportEveryTime;
   bool _checkUpdates;
+  int _historyRetentionDays;
+  int _processingConcurrency;
+  WorkspaceType _lastWorkspaceType;
+  ProcessMode _lastProcessMode;
+  ScrambleAlgorithm _lastAlgorithm;
+  bool _passwordProtectionEnabled;
   String? defaultExportPath;
   String? defaultExportTreeUri;
   String? defaultExportLabel;
@@ -38,6 +61,15 @@ class AppSettings extends ChangeNotifier {
   AppThemePreference get theme => _theme;
   bool get askExportEveryTime => _askExportEveryTime;
   bool get checkUpdates => _checkUpdates;
+  int get historyRetentionDays => _historyRetentionDays;
+  int get processingConcurrency => _processingConcurrency;
+  int get effectiveProcessingConcurrency => _processingConcurrency == 0
+      ? math.min(4, math.max(1, Platform.numberOfProcessors ~/ 2))
+      : _processingConcurrency;
+  WorkspaceType get lastWorkspaceType => _lastWorkspaceType;
+  ProcessMode get lastProcessMode => _lastProcessMode;
+  ScrambleAlgorithm get lastAlgorithm => _lastAlgorithm;
+  bool get passwordProtectionEnabled => _passwordProtectionEnabled;
 
   static Future<AppSettings> load() async {
     final preferences = await SharedPreferences.getInstance();
@@ -64,6 +96,26 @@ class AppSettings extends ChangeNotifier {
       theme: theme,
       askExportEveryTime: preferences.getBool(_askExportKey) ?? true,
       checkUpdates: preferences.getBool(_checkUpdatesKey) ?? true,
+      historyRetentionDays: _validatedRetention(
+        preferences.getInt(_historyRetentionKey),
+      ),
+      processingConcurrency: _validatedConcurrency(
+        preferences.getInt(_processingConcurrencyKey),
+      ),
+      lastWorkspaceType: WorkspaceType.values.firstWhere(
+        (item) => item.name == preferences.getString(_lastWorkspaceKey),
+        orElse: () => WorkspaceType.image,
+      ),
+      lastProcessMode: ProcessMode.values.firstWhere(
+        (item) => item.name == preferences.getString(_lastProcessModeKey),
+        orElse: () => ProcessMode.scramble,
+      ),
+      lastAlgorithm: ScrambleAlgorithm.values.firstWhere(
+        (item) => item.id == preferences.getString(_lastAlgorithmKey),
+        orElse: () => ScrambleAlgorithm.composite,
+      ),
+      passwordProtectionEnabled:
+          preferences.getBool(_passwordProtectionKey) ?? false,
       defaultExportPath: preferences.getString(_defaultExportPathKey),
       defaultExportTreeUri: preferences.getString(_defaultExportTreeKey),
       defaultExportLabel: preferences.getString(_defaultExportLabelKey),
@@ -98,6 +150,40 @@ class AppSettings extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setHistoryRetentionDays(int value) async {
+    final validated = _validatedRetention(value);
+    if (_historyRetentionDays == validated) return;
+    _historyRetentionDays = validated;
+    await _preferences.setInt(_historyRetentionKey, validated);
+    notifyListeners();
+  }
+
+  Future<void> setProcessingConcurrency(int value) async {
+    final validated = _validatedConcurrency(value);
+    if (_processingConcurrency == validated) return;
+    _processingConcurrency = validated;
+    await _preferences.setInt(_processingConcurrencyKey, validated);
+    notifyListeners();
+  }
+
+  Future<void> setProcessingDefaults({
+    required WorkspaceType workspaceType,
+    required ProcessMode mode,
+    required ScrambleAlgorithm algorithm,
+    required bool passwordProtectionEnabled,
+  }) async {
+    _lastWorkspaceType = workspaceType;
+    _lastProcessMode = mode;
+    _lastAlgorithm = algorithm;
+    _passwordProtectionEnabled = passwordProtectionEnabled;
+    await Future.wait([
+      _preferences.setString(_lastWorkspaceKey, workspaceType.name),
+      _preferences.setString(_lastProcessModeKey, mode.name),
+      _preferences.setString(_lastAlgorithmKey, algorithm.id),
+      _preferences.setBool(_passwordProtectionKey, passwordProtectionEnabled),
+    ]);
+  }
+
   Future<void> setDefaultExport({
     String? path,
     String? treeUri,
@@ -119,4 +205,10 @@ class AppSettings extends ChangeNotifier {
     await _preferences.setString(_defaultExportLabelKey, label);
     notifyListeners();
   }
+
+  static int _validatedRetention(int? value) =>
+      const {0, 1, 7, 30, 90}.contains(value) ? value! : 7;
+
+  static int _validatedConcurrency(int? value) =>
+      const {0, 1, 2, 4, 8}.contains(value) ? value! : 0;
 }

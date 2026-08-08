@@ -46,6 +46,7 @@ class ImageTask {
     required this.originalName,
     required this.relativeDirectory,
     required this.sourceRootName,
+    this.sourceRootId = '',
     this.inputPath,
     this.sourceUri,
     this.sizeBytes = 0,
@@ -55,6 +56,7 @@ class ImageTask {
   final String originalName;
   final String relativeDirectory;
   final String sourceRootName;
+  final String sourceRootId;
   final String? inputPath;
   final String? sourceUri;
   final int sizeBytes;
@@ -74,6 +76,7 @@ class ImageTask {
     originalName: originalName,
     relativeDirectory: relativeDirectory,
     sourceRootName: sourceRootName,
+    sourceRootId: sourceRootId,
     inputPath: inputPath,
     sourceUri: sourceUri,
     sizeBytes: sizeBytes,
@@ -112,12 +115,20 @@ class ExportTarget {
     this.treeUri,
     required this.rootFolderName,
     required this.singleFile,
+    this.displayLabel = '',
+    this.createdDirectories = const [],
+    this.taskRootPaths = const {},
+    this.taskRootFolderNames = const {},
   });
 
   final String? path;
   final String? treeUri;
   final String rootFolderName;
   final bool singleFile;
+  final String displayLabel;
+  final List<String> createdDirectories;
+  final Map<String, String> taskRootPaths;
+  final Map<String, String> taskRootFolderNames;
 
   bool get isAndroidTree => treeUri != null;
 }

@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:cross_file/cross_file.dart';
 import 'package:flutter/foundation.dart';
 
 import 'app_settings.dart';
+import 'export_history.dart';
 import 'file_service.dart';
 import 'image_processor.dart';
 import 'models.dart';
@@ -15,20 +18,35 @@ class AppController extends ChangeNotifier {
     ImageProcessor? imageProcessor,
     TextProcessor? textProcessor,
     UpdateService? updateService,
+    ExportHistoryStore? historyStore,
   }) : _fileService = fileService ?? FileService(),
        _imageProcessor = imageProcessor ?? ImageProcessor(),
        _textProcessor = textProcessor ?? const TextProcessor(),
-       _updateService = updateService ?? UpdateService();
+       _updateService = updateService ?? UpdateService(),
+       _historyStore = historyStore ?? ExportHistoryStore.memory() {
+    workspaceType = _settings.lastWorkspaceType;
+    mode = _settings.lastProcessMode;
+    algorithm = _settings.lastAlgorithm;
+    if (mode == ProcessMode.scramble && algorithm.isAutomatic) {
+      algorithm = ScrambleAlgorithm.composite;
+    }
+    passwordEnabled =
+        _settings.passwordProtectionEnabled &&
+        workspaceType == WorkspaceType.image &&
+        mode == ProcessMode.scramble &&
+        !algorithm.isCompatibility;
+  }
 
   final AppSettings _settings;
   final FileService _fileService;
   final ImageProcessor _imageProcessor;
   final TextProcessor _textProcessor;
   final UpdateService _updateService;
+  final ExportHistoryStore _historyStore;
 
-  ProcessMode mode = ProcessMode.scramble;
-  WorkspaceType workspaceType = WorkspaceType.image;
-  ScrambleAlgorithm algorithm = ScrambleAlgorithm.composite;
+  late ProcessMode mode;
+  late WorkspaceType workspaceType;
+  late ScrambleAlgorithm algorithm;
   ImportBatch? batch;
   bool passwordEnabled = false;
   String password = '';
@@ -40,6 +58,7 @@ class AppController extends ChangeNotifier {
   String? detailMessage;
   UpdateInfo? availableUpdate;
   bool checkingUpdate = false;
+  String? undoingHistoryId;
 
   List<ImageTask> get tasks => batch?.tasks ?? const [];
   int get completedCount =>
@@ -49,6 +68,9 @@ class AppController extends ChangeNotifier {
   bool get hasFailed => failedCount > 0;
   bool get canStart => tasks.isNotEmpty && !isProcessing;
   FileService get fileService => _fileService;
+  List<ExportHistoryEntry> get exportHistory => _historyStore.entries;
+  int get effectiveProcessingConcurrency =>
+      _settings.effectiveProcessingConcurrency;
 
   void setMode(ProcessMode value) {
     if (isProcessing || mode == value) return;
@@ -60,6 +82,7 @@ class AppController extends ChangeNotifier {
     password = '';
     manualSeed = '';
     _resetTaskStates();
+    _persistProcessingDefaults();
     notifyListeners();
   }
 
@@ -75,6 +98,7 @@ class AppController extends ChangeNotifier {
     progress = 0;
     statusKey = 'ready';
     detailMessage = null;
+    _persistProcessingDefaults();
     notifyListeners();
   }
 
@@ -82,6 +106,7 @@ class AppController extends ChangeNotifier {
     if (isProcessing || algorithm == value) return;
     algorithm = value;
     if (value.isCompatibility) passwordEnabled = false;
+    _persistProcessingDefaults();
     notifyListeners();
   }
 
@@ -89,6 +114,7 @@ class AppController extends ChangeNotifier {
     if (algorithm.isCompatibility || isProcessing) return;
     passwordEnabled = value;
     if (!value) password = '';
+    _persistProcessingDefaults();
     notifyListeners();
   }
 
@@ -119,9 +145,20 @@ class AppController extends ChangeNotifier {
     try {
       final imported = await action();
       if (imported == null) return;
-      batch = imported;
+      if (batch == null || batch!.workspaceType != imported.workspaceType) {
+        batch = imported;
+      } else {
+        batch = ImportBatch(
+          tasks: [...batch!.tasks, ...imported.tasks],
+          isFolder: batch!.isFolder || imported.isFolder,
+          rootName: batch!.rootName.isNotEmpty
+              ? batch!.rootName
+              : imported.rootName,
+          workspaceType: imported.workspaceType,
+        );
+      }
       progress = 0;
-      statusKey = imported.tasks.isEmpty
+      statusKey = batch!.tasks.isEmpty
           ? (workspaceType == WorkspaceType.text
                 ? 'textFolderEmpty'
                 : 'folderEmpty')
@@ -163,6 +200,38 @@ class AppController extends ChangeNotifier {
   void requestStop() {
     stopRequested = true;
     notifyListeners();
+  }
+
+  Future<void> setHistoryRetentionDays(int value) async {
+    await _settings.setHistoryRetentionDays(value);
+    await _historyStore.cleanup(value);
+    notifyListeners();
+  }
+
+  Future<void> setProcessingConcurrency(int value) async {
+    await _settings.setProcessingConcurrency(value);
+    notifyListeners();
+  }
+
+  Future<void> cleanupExportHistory() async {
+    final removed = await _historyStore.cleanup(_settings.historyRetentionDays);
+    if (removed > 0) notifyListeners();
+  }
+
+  Future<UndoResult> undoExport(ExportHistoryEntry entry) async {
+    if (!entry.canUndo || undoingHistoryId != null || isProcessing) {
+      return const UndoResult();
+    }
+    undoingHistoryId = entry.id;
+    notifyListeners();
+    try {
+      final result = await _fileService.undoExport(entry);
+      await _historyStore.markUndone(entry.id, result);
+      return result;
+    } finally {
+      undoingHistoryId = null;
+      notifyListeners();
+    }
   }
 
   Future<void> process() async {
@@ -209,38 +278,81 @@ class AppController extends ChangeNotifier {
     _resetTaskStates();
     notifyListeners();
 
-    for (var index = 0; index < tasks.length; index++) {
-      if (stopRequested) break;
-      final task = tasks[index];
-      task.status = TaskStatus.processing;
-      notifyListeners();
-      try {
-        final input = await _fileService.readTask(task);
-        late final Uint8List outputBytes;
-        if (workspaceType == WorkspaceType.image) {
-          final result = await _processOne(input, task, parsedSeed);
-          task.detectedAlgorithmId = result.algorithm.id;
-          outputBytes = Uint8List.fromList(result.bytes);
-        } else {
-          outputBytes = mode == ProcessMode.scramble
-              ? await _textProcessor.encode(input)
-              : await _textProcessor.restore(input);
-          task.detectedAlgorithmId = 'base64';
+    final outputs = <SaveOutputResult>[];
+    var nextIndex = 0;
+    var finishedCount = 0;
+
+    Future<void> worker() async {
+      while (true) {
+        if (stopRequested || nextIndex >= tasks.length) return;
+        final index = nextIndex++;
+        final task = tasks[index];
+        task.status = TaskStatus.processing;
+        notifyListeners();
+        try {
+          final input = await _fileService.readTask(task);
+          late final Uint8List outputBytes;
+          if (workspaceType == WorkspaceType.image) {
+            final result = await _processOne(input, task, parsedSeed);
+            task.detectedAlgorithmId = result.algorithm.id;
+            outputBytes = Uint8List.fromList(result.bytes);
+          } else {
+            outputBytes = mode == ProcessMode.scramble
+                ? await _textProcessor.encode(input)
+                : await _textProcessor.restore(input);
+            task.detectedAlgorithmId = 'base64';
+          }
+          final saved = await _fileService.saveOutput(
+            bytes: outputBytes,
+            task: task,
+            mode: mode,
+            target: target,
+            workspaceType: workspaceType,
+          );
+          outputs.add(saved);
+          task.outputLocation = saved.location;
+          task.status = TaskStatus.completed;
+        } catch (error) {
+          task.status = TaskStatus.failed;
+          task.error = _errorText(error);
         }
-        task.outputLocation = await _fileService.saveOutput(
-          bytes: outputBytes,
-          task: task,
-          mode: mode,
-          target: target,
-          workspaceType: workspaceType,
-        );
-        task.status = TaskStatus.completed;
-      } catch (error) {
-        task.status = TaskStatus.failed;
-        task.error = _errorText(error);
+        finishedCount++;
+        progress = finishedCount / tasks.length;
+        notifyListeners();
       }
-      progress = (index + 1) / tasks.length;
-      notifyListeners();
+    }
+
+    final workerCount = effectiveProcessingConcurrency.clamp(1, tasks.length);
+    await Future.wait(List.generate(workerCount, (_) => worker()));
+
+    if (outputs.isNotEmpty) {
+      final createdDirectories = <String>{
+        ...target.createdDirectories,
+        for (final output in outputs) ...output.createdDirectories,
+      }.toList(growable: false);
+      await _historyStore.add(
+        ExportHistoryEntry(
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
+          createdAt: DateTime.now(),
+          workspaceType: workspaceType,
+          mode: mode,
+          targetLabel: target.displayLabel.isNotEmpty
+              ? target.displayLabel
+              : outputs.first.displayName,
+          artifacts: outputs
+              .map(
+                (output) => ExportArtifact(
+                  location: output.location,
+                  displayName: output.displayName,
+                  sha256: output.sha256Digest,
+                  sizeBytes: output.sizeBytes,
+                ),
+              )
+              .toList(growable: false),
+          createdDirectories: createdDirectories,
+        ),
+      );
+      await _historyStore.cleanup(_settings.historyRetentionDays);
     }
 
     isProcessing = false;
@@ -303,6 +415,17 @@ class AppController extends ChangeNotifier {
       task.error = null;
       task.detectedAlgorithmId = null;
     }
+  }
+
+  void _persistProcessingDefaults() {
+    unawaited(
+      _settings.setProcessingDefaults(
+        workspaceType: workspaceType,
+        mode: mode,
+        algorithm: algorithm,
+        passwordProtectionEnabled: passwordEnabled,
+      ),
+    );
   }
 
   String _errorText(Object error) {

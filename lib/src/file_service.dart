@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:cross_file/cross_file.dart';
+import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 
 import 'app_settings.dart';
+import 'export_history.dart';
 import 'models.dart';
 
 class FileService {
@@ -18,6 +21,7 @@ class FileService {
     'tif',
     'tiff',
   ];
+  Future<void> _saveTail = Future<void>.value();
 
   Future<ImportBatch?> pickFiles(WorkspaceType workspaceType) async {
     final textMode = workspaceType == WorkspaceType.text;
@@ -98,6 +102,7 @@ class FileService {
           originalName: path.basename(entity.path),
           relativeDirectory: relative == '.' ? '' : relative,
           sourceRootName: rootName,
+          sourceRootId: directory.absolute.path,
           inputPath: entity.path,
           sizeBytes: await entity.length(),
         ),
@@ -121,12 +126,22 @@ class FileService {
     WorkspaceType workspaceType = WorkspaceType.image,
   }) async {
     if (dropped.isEmpty) return null;
-    if (dropped.length == 1 && await Directory(dropped.first.path).exists()) {
-      return importFolderPath(dropped.first.path, workspaceType: workspaceType);
-    }
     final tasks = <ImageTask>[];
+    var containsFolder = false;
+    var firstRootName = '';
     var index = 0;
     for (final item in dropped) {
+      final directory = Directory(item.path);
+      if (await directory.exists()) {
+        final imported = await importFolderPath(
+          directory.path,
+          workspaceType: workspaceType,
+        );
+        containsFolder = true;
+        if (firstRootName.isEmpty) firstRootName = imported.rootName;
+        tasks.addAll(imported.tasks);
+        continue;
+      }
       final file = File(item.path);
       if (!await file.exists() || !_isSupported(item.path, workspaceType)) {
         continue;
@@ -146,8 +161,8 @@ class FileService {
         ? null
         : ImportBatch(
             tasks: tasks,
-            isFolder: false,
-            rootName: '',
+            isFolder: containsFolder,
+            rootName: firstRootName,
             workspaceType: workspaceType,
           );
   }
@@ -179,9 +194,18 @@ class FileService {
         ? sanitizeFileName(batch.rootName)
         : _batchFolderName(mode, batch.workspaceType);
 
+    final suggestedName = outputFileName(
+      batch.tasks.first,
+      mode,
+      workspaceType: batch.workspaceType,
+    );
     if (Platform.isAndroid) {
       if (single && settings.askExportEveryTime) {
-        return const ExportTarget(rootFolderName: '', singleFile: true);
+        return ExportTarget(
+          rootFolderName: '',
+          singleFile: true,
+          displayLabel: suggestedName,
+        );
       }
       String? treeUri;
       if (!settings.askExportEveryTime) {
@@ -195,35 +219,78 @@ class FileService {
           await settings.setDefaultExport(treeUri: tree.uri, label: tree.name);
         }
       }
+      if (!single) {
+        final taskRoots = <String, String>{};
+        final createdDirectories = <String>[];
+        final groups = _outputGroups(batch, rootFolderName);
+        for (final group in groups) {
+          final reserved = await _channel.invokeMapMethod<String, dynamic>(
+            'createUniqueDirectory',
+            {'treeUri': treeUri, 'desiredName': group.name},
+          );
+          if (reserved == null) {
+            throw const FileServiceException('建立唯一导出文件夹失败');
+          }
+          final actualName = reserved['name'] as String? ?? group.name;
+          final directoryUri = reserved['uri'] as String?;
+          for (final task in group.tasks) {
+            taskRoots[task.id] = actualName;
+          }
+          if (directoryUri != null) createdDirectories.add(directoryUri);
+        }
+        return ExportTarget(
+          treeUri: treeUri,
+          rootFolderName: '',
+          singleFile: false,
+          displayLabel: groups.length == 1
+              ? '${taskRoots.values.first}/'
+              : '${groups.length} 个文件夹',
+          createdDirectories: createdDirectories,
+          taskRootFolderNames: taskRoots,
+        );
+      }
       return ExportTarget(
         treeUri: treeUri,
-        rootFolderName: single ? '' : rootFolderName,
-        singleFile: single,
+        rootFolderName: '',
+        singleFile: true,
+        displayLabel: suggestedName,
       );
     }
 
     if (single) {
-      final suggestedName = outputFileName(
-        batch.tasks.first,
-        mode,
-        workspaceType: batch.workspaceType,
-      );
       if (!settings.askExportEveryTime && settings.defaultExportPath != null) {
+        final uniquePath = await _uniqueFilePath(
+          path.join(settings.defaultExportPath!, suggestedName),
+        );
         return ExportTarget(
-          path: path.join(settings.defaultExportPath!, suggestedName),
+          path: uniquePath,
           rootFolderName: '',
           singleFile: true,
+          displayLabel: uniquePath,
         );
       }
       var selected = await FilePicker.platform.saveFile(
-        dialogTitle: '导出图片',
+        dialogTitle: batch.workspaceType == WorkspaceType.text
+            ? '导出 TXT'
+            : '导出图片',
         fileName: suggestedName,
         type: FileType.custom,
-        allowedExtensions: const ['png'],
+        allowedExtensions: batch.workspaceType == WorkspaceType.text
+            ? const ['txt']
+            : const ['png'],
       );
       if (selected == null) return null;
-      if (!selected.toLowerCase().endsWith('.png')) selected += '.png';
-      return ExportTarget(path: selected, rootFolderName: '', singleFile: true);
+      final extension = batch.workspaceType == WorkspaceType.text
+          ? '.txt'
+          : '.png';
+      if (!selected.toLowerCase().endsWith(extension)) selected += extension;
+      final uniquePath = await _uniqueFilePath(selected);
+      return ExportTarget(
+        path: uniquePath,
+        rootFolderName: '',
+        singleFile: true,
+        displayLabel: uniquePath,
+      );
     }
 
     var selectedDirectory = settings.askExportEveryTime
@@ -233,37 +300,78 @@ class FileService {
       dialogTitle: '选择导出位置',
     );
     if (selectedDirectory == null) return null;
+    final taskRoots = <String, String>{};
+    final createdDirectories = <String>[];
+    final groups = _outputGroups(batch, rootFolderName);
+    for (final group in groups) {
+      final reserved = await _createUniqueDirectory(
+        path.join(selectedDirectory, group.name),
+      );
+      createdDirectories.add(reserved.path);
+      for (final task in group.tasks) {
+        taskRoots[task.id] = reserved.path;
+      }
+    }
     return ExportTarget(
       path: selectedDirectory,
-      rootFolderName: rootFolderName,
+      rootFolderName: '',
       singleFile: false,
+      displayLabel: groups.length == 1
+          ? taskRoots.values.first
+          : '$selectedDirectory · ${groups.length} 个文件夹',
+      createdDirectories: createdDirectories,
+      taskRootPaths: taskRoots,
     );
   }
 
-  Future<String> saveOutput({
+  Future<SaveOutputResult> saveOutput({
     required Uint8List bytes,
     required ImageTask task,
     required ProcessMode mode,
     required ExportTarget target,
     WorkspaceType workspaceType = WorkspaceType.image,
+  }) => _enqueueSave(
+    () => _saveOutputUnlocked(
+      bytes: bytes,
+      task: task,
+      mode: mode,
+      target: target,
+      workspaceType: workspaceType,
+    ),
+  );
+
+  Future<SaveOutputResult> _saveOutputUnlocked({
+    required Uint8List bytes,
+    required ImageTask task,
+    required ProcessMode mode,
+    required ExportTarget target,
+    required WorkspaceType workspaceType,
   }) async {
     final fileName = outputFileName(task, mode, workspaceType: workspaceType);
     final mimeType = workspaceType == WorkspaceType.text
         ? 'text/plain'
         : 'image/png';
     if (!Platform.isAndroid) {
-      final outputPath = target.singleFile
+      final taskRoot = target.taskRootPaths[task.id];
+      final desiredOutputPath = target.singleFile
           ? target.path!
-          : path.join(
-              target.path!,
-              target.rootFolderName,
+          : path.joinAll([
+              taskRoot ?? target.path!,
+              if (taskRoot == null) target.rootFolderName,
               task.relativeDirectory,
               fileName,
-            );
+            ]);
+      final outputPath = await _uniqueFilePath(desiredOutputPath);
       final file = File(outputPath);
-      await file.parent.create(recursive: true);
+      final createdDirectories = await _createMissingDirectories(file.parent);
       await file.writeAsBytes(bytes, flush: true);
-      return file.path;
+      return SaveOutputResult(
+        location: file.path,
+        displayName: path.basename(file.path),
+        sha256Digest: sha256.convert(bytes).toString(),
+        sizeBytes: bytes.length,
+        createdDirectories: createdDirectories,
+      );
     }
 
     final temporaryDirectory = Directory.systemTemp;
@@ -275,28 +383,144 @@ class FileService {
       ),
     );
     await temporaryFile.writeAsBytes(bytes, flush: true);
-    if (target.singleFile && target.treeUri == null) {
-      final uri = await _channel.invokeMethod<String>('saveDocument', {
-        'sourcePath': temporaryFile.path,
-        'suggestedName': fileName,
-        'mimeType': mimeType,
-      });
-      if (uri == null) throw const ExportCancelledException();
-      return uri;
+    try {
+      if (target.singleFile && target.treeUri == null) {
+        final saved = await _channel.invokeMethod<dynamic>('saveDocument', {
+          'sourcePath': temporaryFile.path,
+          'suggestedName': fileName,
+          'mimeType': mimeType,
+        });
+        if (saved == null) throw const ExportCancelledException();
+        final uri = saved is String
+            ? saved
+            : Map<String, dynamic>.from(saved as Map)['uri'] as String;
+        final actualName = saved is String
+            ? fileName
+            : Map<String, dynamic>.from(saved as Map)['name'] as String? ??
+                  fileName;
+        return SaveOutputResult(
+          location: uri,
+          displayName: actualName,
+          sha256Digest: sha256.convert(bytes).toString(),
+          sizeBytes: bytes.length,
+        );
+      }
+      final relativeFolder = [
+        if ((target.taskRootFolderNames[task.id] ?? target.rootFolderName)
+            .isNotEmpty)
+          target.taskRootFolderNames[task.id] ?? target.rootFolderName,
+        if (task.relativeDirectory.isNotEmpty) task.relativeDirectory,
+      ].join('/');
+      final saved = await _channel
+          .invokeMapMethod<String, dynamic>('writeFileToTree', {
+            'treeUri': target.treeUri,
+            'relativeFolder': relativeFolder,
+            'fileName': fileName,
+            'sourcePath': temporaryFile.path,
+            'mimeType': mimeType,
+          });
+      if (saved == null) {
+        throw const FileServiceException('写入 Android 文件夹失败');
+      }
+      final uri = saved['uri'] as String?;
+      if (uri == null) throw const FileServiceException('写入 Android 文件夹失败');
+      return SaveOutputResult(
+        location: uri,
+        displayName: saved['name'] as String? ?? fileName,
+        sha256Digest: sha256.convert(bytes).toString(),
+        sizeBytes: bytes.length,
+        createdDirectories:
+            (saved['createdDirectories'] as List<dynamic>? ?? const [])
+                .whereType<String>()
+                .toList(growable: false),
+      );
+    } finally {
+      if (await temporaryFile.exists()) await temporaryFile.delete();
     }
-    final relativeFolder = [
-      if (target.rootFolderName.isNotEmpty) target.rootFolderName,
-      if (task.relativeDirectory.isNotEmpty) task.relativeDirectory,
-    ].join('/');
-    final uri = await _channel.invokeMethod<String>('writeFileToTree', {
-      'treeUri': target.treeUri,
-      'relativeFolder': relativeFolder,
-      'fileName': fileName,
-      'sourcePath': temporaryFile.path,
-      'mimeType': mimeType,
+  }
+
+  Future<T> _enqueueSave<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _saveTail = _saveTail.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
     });
-    if (uri == null) throw const FileServiceException('写入 Android 文件夹失败');
-    return uri;
+    return completer.future;
+  }
+
+  Future<UndoResult> undoExport(ExportHistoryEntry entry) async {
+    var deleted = 0;
+    var modified = 0;
+    var missing = 0;
+    var failed = 0;
+    for (final artifact in entry.artifacts) {
+      try {
+        if (Platform.isAndroid) {
+          final status = await _channel.invokeMethod<String>(
+            'deleteDocumentIfHash',
+            {'uri': artifact.location, 'sha256': artifact.sha256},
+          );
+          switch (status) {
+            case 'deleted':
+              deleted++;
+              break;
+            case 'modified':
+              modified++;
+              break;
+            case 'missing':
+              missing++;
+              break;
+            default:
+              failed++;
+              break;
+          }
+          continue;
+        }
+        final file = File(artifact.location);
+        if (!await file.exists()) {
+          missing++;
+          continue;
+        }
+        final currentHash = sha256.convert(await file.readAsBytes()).toString();
+        if (currentHash != artifact.sha256) {
+          modified++;
+          continue;
+        }
+        await file.delete();
+        deleted++;
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    final directories = entry.createdDirectories.toSet().toList()
+      ..sort((left, right) => right.length.compareTo(left.length));
+    for (final location in directories) {
+      try {
+        if (Platform.isAndroid) {
+          await _channel.invokeMethod<bool>('deleteEmptyDocument', {
+            'uri': location,
+          });
+        } else {
+          final directory = Directory(location);
+          if (await directory.exists()) {
+            final children = await directory.list().toList();
+            if (children.isEmpty) await directory.delete();
+          }
+        }
+      } catch (_) {
+        // A non-empty or externally changed folder is intentionally preserved.
+      }
+    }
+    return UndoResult(
+      deleted: deleted,
+      modified: modified,
+      missing: missing,
+      failed: failed,
+    );
   }
 
   Future<DefaultExportSelection?> chooseDefaultExport() async {
@@ -330,9 +554,55 @@ class FileService {
     }
     if (mode == ProcessMode.restore) {
       base = base.replaceFirst(RegExp(r'[_-](混淆|混淆圖|scrambled)$'), '');
-      return '${sanitizeFileName(base)}_还原.png';
     }
-    return '${sanitizeFileName(base)}_混淆.png';
+    return '${sanitizeFileName(base)}.png';
+  }
+
+  Future<String> _uniqueFilePath(String desiredPath) async {
+    if (!await FileSystemEntity.type(
+      desiredPath,
+    ).then((type) => type != FileSystemEntityType.notFound)) {
+      return desiredPath;
+    }
+    final directory = path.dirname(desiredPath);
+    final extension = path.extension(desiredPath);
+    final base = path.basenameWithoutExtension(desiredPath);
+    var index = 1;
+    while (true) {
+      final candidate = path.join(directory, '$base（$index）$extension');
+      final exists = await FileSystemEntity.type(
+        candidate,
+      ).then((type) => type != FileSystemEntityType.notFound);
+      if (!exists) return candidate;
+      index++;
+    }
+  }
+
+  Future<Directory> _createUniqueDirectory(String desiredPath) async {
+    var candidate = desiredPath;
+    var index = 1;
+    while (await FileSystemEntity.type(
+      candidate,
+    ).then((type) => type != FileSystemEntityType.notFound)) {
+      candidate = '$desiredPath（$index）';
+      index++;
+    }
+    return Directory(candidate).create(recursive: true);
+  }
+
+  Future<List<String>> _createMissingDirectories(Directory directory) async {
+    final missing = <String>[];
+    var current = directory;
+    while (!await current.exists()) {
+      missing.add(current.path);
+      final parent = current.parent;
+      if (parent.path == current.path) break;
+      current = parent;
+    }
+    for (final item in missing.reversed) {
+      await Directory(item).create();
+    }
+    return missing;
   }
 
   String _batchFolderName(ProcessMode mode, WorkspaceType workspaceType) {
@@ -366,6 +636,7 @@ class FileService {
           originalName: name,
           relativeDirectory: item['relativeDirectory'] as String? ?? '',
           sourceRootName: tree.name,
+          sourceRootId: tree.uri,
           sourceUri: item['uri'] as String?,
           sizeBytes: (item['size'] as num?)?.toInt() ?? 0,
         ),
@@ -385,6 +656,26 @@ class FileService {
         : isSupportedImageName(name);
   }
 
+  List<_OutputGroup> _outputGroups(ImportBatch batch, String fallbackName) {
+    final grouped = <String, List<ImageTask>>{};
+    final names = <String, String>{};
+    final loose = <ImageTask>[];
+    for (final task in batch.tasks) {
+      if (task.sourceRootId.isEmpty) {
+        loose.add(task);
+      } else {
+        grouped.putIfAbsent(task.sourceRootId, () => []).add(task);
+        names[task.sourceRootId] = task.sourceRootName;
+      }
+    }
+    final output = <_OutputGroup>[
+      for (final entry in grouped.entries)
+        _OutputGroup(names[entry.key] ?? fallbackName, entry.value),
+    ];
+    if (loose.isNotEmpty) output.add(_OutputGroup(fallbackName, loose));
+    return output;
+  }
+
   Future<_AndroidTree?> _pickTree() async {
     final result = await _channel.invokeMapMethod<String, dynamic>('pickTree');
     if (result == null) return null;
@@ -402,10 +693,32 @@ class DefaultExportSelection {
   final String label;
 }
 
+class SaveOutputResult {
+  const SaveOutputResult({
+    required this.location,
+    required this.displayName,
+    required this.sha256Digest,
+    required this.sizeBytes,
+    this.createdDirectories = const [],
+  });
+
+  final String location;
+  final String displayName;
+  final String sha256Digest;
+  final int sizeBytes;
+  final List<String> createdDirectories;
+}
+
 class _AndroidTree {
   const _AndroidTree(this.uri, this.name);
   final String uri;
   final String name;
+}
+
+class _OutputGroup {
+  const _OutputGroup(this.name, this.tasks);
+  final String name;
+  final List<ImageTask> tasks;
 }
 
 class FileServiceException implements Exception {

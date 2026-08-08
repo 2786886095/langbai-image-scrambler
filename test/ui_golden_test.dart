@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:langbai_image_scrambler/src/app.dart';
 import 'package:langbai_image_scrambler/src/app_controller.dart';
 import 'package:langbai_image_scrambler/src/app_settings.dart';
+import 'package:langbai_image_scrambler/src/export_history.dart';
 import 'package:langbai_image_scrambler/src/models.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -35,6 +36,9 @@ void main() {
     bool passwordEnabled = false,
     bool openSettings = false,
     bool scrollSettingsToBottom = false,
+    bool openHistory = false,
+    bool populatedHistory = false,
+    bool multiFolderQueue = false,
     String theme = 'dark',
     String language = 'simplified',
     double textScaleFactor = 1,
@@ -45,10 +49,48 @@ void main() {
       'language': language,
     });
     final settings = await AppSettings.load();
-    final controller = AppController(settings);
+    final history = ExportHistoryStore.memory();
+    if (populatedHistory) {
+      await history.add(
+        ExportHistoryEntry(
+          id: 'golden-history',
+          createdAt: DateTime(2026, 8, 8, 20, 30),
+          workspaceType: WorkspaceType.image,
+          mode: ProcessMode.scramble,
+          targetLabel: r'D:\图片输出\画集（1）',
+          artifacts: const [
+            ExportArtifact(
+              location: r'D:\图片输出\画集（1）\封面.png',
+              displayName: '封面.png',
+              sha256: 'golden',
+              sizeBytes: 1024,
+            ),
+            ExportArtifact(
+              location: r'D:\图片输出\画集（1）\插图.png',
+              displayName: '插图.png',
+              sha256: 'golden',
+              sizeBytes: 2048,
+            ),
+          ],
+          createdDirectories: const [],
+        ),
+      );
+    }
+    final controller = AppController(settings, historyStore: history);
     if (textWorkspace) controller.setWorkspaceType(WorkspaceType.text);
     if (restoreMode) controller.setMode(ProcessMode.restore);
     if (passwordEnabled) controller.setPasswordEnabled(true);
+    if (multiFolderQueue) {
+      controller.batch = ImportBatch(
+        tasks: [
+          _folderTask('a', '封面.png', '画集A', 'root-a'),
+          _folderTask('b', '插图.png', '画集A', 'root-a'),
+          _folderTask('c', '第一章.png', '画集B', 'root-b'),
+        ],
+        isFolder: true,
+        rootName: '画集A',
+      );
+    }
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = size;
     tester.platformDispatcher.textScaleFactorTestValue = textScaleFactor;
@@ -93,10 +135,23 @@ void main() {
       if (scrollSettingsToBottom) {
         await tester.drag(
           find.byType(SingleChildScrollView).last,
-          const Offset(0, -720),
+          const Offset(0, -1200),
         );
         await tester.pumpAndSettle();
       }
+    }
+    if (multiFolderQueue && size.width < 960) {
+      await tester.ensureVisible(find.text('画集A'));
+      await tester.pumpAndSettle();
+    }
+    if (openHistory) {
+      final label = language == 'traditional' ? '匯出記錄' : '导出记录';
+      if (size.width < 960) {
+        await tester.tap(find.byTooltip(label));
+      } else {
+        await tester.tap(find.text(label));
+      }
+      await tester.pumpAndSettle();
     }
     await expectLater(find.byType(MaterialApp), matchesGoldenFile(output));
   }
@@ -286,4 +341,59 @@ void main() {
     ),
     skip: !_runGoldens,
   );
+
+  testWidgets(
+    'desktop export history',
+    (tester) => render(
+      tester,
+      const Size(1440, 900),
+      'goldens/export_history_desktop.png',
+      openHistory: true,
+      populatedHistory: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android export history',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/export_history_android.png',
+      openHistory: true,
+      populatedHistory: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'desktop collapsed multi-folder queue',
+    (tester) => render(
+      tester,
+      const Size(1440, 900),
+      'goldens/multi_folder_queue_desktop.png',
+      multiFolderQueue: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android collapsed multi-folder queue',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/multi_folder_queue_android.png',
+      multiFolderQueue: true,
+    ),
+    skip: !_runGoldens,
+  );
 }
+
+ImageTask _folderTask(String id, String name, String rootName, String rootId) =>
+    ImageTask(
+      id: id,
+      originalName: name,
+      relativeDirectory: '',
+      sourceRootName: rootName,
+      sourceRootId: rootId,
+    );
