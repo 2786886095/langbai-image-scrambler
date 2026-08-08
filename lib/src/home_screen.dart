@@ -72,7 +72,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             fontSize: 11,
                             color: Theme.of(
                               context,
-                            ).colorScheme.onSurface.withValues(alpha: 0.58),
+                            ).colorScheme.onSurface.withValues(alpha: 0.65),
                             letterSpacing: 0.6,
                           ),
                         ),
@@ -160,7 +160,7 @@ class _Sidebar extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 10,
                             letterSpacing: 0.7,
-                            color: scheme.onSurface.withValues(alpha: 0.5),
+                            color: scheme.onSurface.withValues(alpha: 0.65),
                           ),
                         ),
                       ],
@@ -220,7 +220,7 @@ class _Sidebar extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 10.5,
                               height: 1.45,
-                              color: scheme.onSurface.withValues(alpha: 0.58),
+                              color: scheme.onSurface.withValues(alpha: 0.65),
                             ),
                           ),
                         ],
@@ -332,6 +332,8 @@ class _Workspace extends StatelessWidget {
                       _UpdateBanner(strings: strings),
                     ],
                     const SizedBox(height: 22),
+                    _WorkspaceTypeSelector(strings: strings),
+                    const SizedBox(height: 12),
                     _ModeSelector(strings: strings),
                     const SizedBox(height: 20),
                     LayoutBuilder(
@@ -348,8 +350,11 @@ class _Workspace extends StatelessWidget {
                                       strings: strings,
                                       dragging: dragging,
                                     ),
-                                    const SizedBox(height: 18),
-                                    _ConfigurationCard(strings: strings),
+                                    if (controller.workspaceType ==
+                                        WorkspaceType.image) ...[
+                                      const SizedBox(height: 18),
+                                      _ConfigurationCard(strings: strings),
+                                    ],
                                   ],
                                 ),
                               ),
@@ -364,8 +369,11 @@ class _Workspace extends StatelessWidget {
                         return Column(
                           children: [
                             _ImportCard(strings: strings, dragging: dragging),
-                            const SizedBox(height: 16),
-                            _ConfigurationCard(strings: strings),
+                            if (controller.workspaceType ==
+                                WorkspaceType.image) ...[
+                              const SizedBox(height: 16),
+                              _ConfigurationCard(strings: strings),
+                            ],
                             const SizedBox(height: 16),
                             _QueueCard(strings: strings),
                           ],
@@ -430,6 +438,14 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
+    final textMode = controller.workspaceType == WorkspaceType.text;
+    final heroTitle = textMode
+        ? (controller.mode == ProcessMode.scramble
+              ? strings['heroTextEncode']
+              : strings['heroTextRestore'])
+        : (controller.mode == ProcessMode.scramble
+              ? strings['heroScramble']
+              : strings['heroRestore']);
     return Wrap(
       alignment: WrapAlignment.spaceBetween,
       crossAxisAlignment: WrapCrossAlignment.center,
@@ -466,9 +482,7 @@ class _Header extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                controller.mode == ProcessMode.scramble
-                    ? strings['heroScramble']
-                    : strings['heroRestore'],
+                heroTitle,
                 style: const TextStyle(
                   fontSize: 28,
                   height: 1.2,
@@ -478,10 +492,10 @@ class _Header extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                strings['heroDesc'],
+                textMode ? strings['heroTextDesc'] : strings['heroDesc'],
                 style: TextStyle(
                   height: 1.6,
-                  color: scheme.onSurface.withValues(alpha: 0.62),
+                  color: scheme.onSurface.withValues(alpha: 0.65),
                 ),
               ),
             ],
@@ -493,11 +507,13 @@ class _Header extends StatelessWidget {
           children: [
             _FeaturePill(
               icon: Icons.verified_outlined,
-              label: strings['pixelExact'],
+              label: textMode ? strings['byteExact'] : strings['pixelExact'],
             ),
             _FeaturePill(
-              icon: Icons.image_outlined,
-              label: strings['pngOutput'],
+              icon: textMode ? Icons.code_rounded : Icons.image_outlined,
+              label: textMode
+                  ? strings['base64Standard']
+                  : strings['pngOutput'],
             ),
             _FeaturePill(
               icon: Icons.account_tree_outlined,
@@ -541,8 +557,9 @@ class _FeaturePill extends StatelessWidget {
   }
 }
 
-class _ModeSelector extends StatelessWidget {
-  const _ModeSelector({required this.strings});
+class _WorkspaceTypeSelector extends StatelessWidget {
+  const _WorkspaceTypeSelector({required this.strings});
+
   final AppStrings strings;
 
   @override
@@ -550,17 +567,60 @@ class _ModeSelector extends StatelessWidget {
     final controller = context.watch<AppController>();
     return Align(
       alignment: Alignment.centerLeft,
+      child: SegmentedButton<WorkspaceType>(
+        segments: [
+          ButtonSegment(
+            value: WorkspaceType.image,
+            icon: const Icon(Icons.image_outlined),
+            label: Text(strings['workspaceImage']),
+          ),
+          ButtonSegment(
+            value: WorkspaceType.text,
+            icon: const Icon(Icons.description_outlined),
+            label: Text(strings['workspaceText']),
+          ),
+        ],
+        selected: {controller.workspaceType},
+        onSelectionChanged: controller.isProcessing
+            ? null
+            : (selection) => controller.setWorkspaceType(selection.first),
+        showSelectedIcon: false,
+        style: ButtonStyle(
+          minimumSize: const WidgetStatePropertyAll(Size(132, 44)),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeSelector extends StatelessWidget {
+  const _ModeSelector({required this.strings});
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<AppController>();
+    final textMode = controller.workspaceType == WorkspaceType.text;
+    return Align(
+      alignment: Alignment.centerLeft,
       child: SegmentedButton<ProcessMode>(
         segments: [
           ButtonSegment(
             value: ProcessMode.scramble,
-            icon: const Icon(Icons.grid_view_rounded),
-            label: Text(strings['scramble']),
+            icon: Icon(textMode ? Icons.code_rounded : Icons.grid_view_rounded),
+            label: Text(textMode ? strings['textEncode'] : strings['scramble']),
           ),
           ButtonSegment(
             value: ProcessMode.restore,
-            icon: const Icon(Icons.auto_fix_high_outlined),
-            label: Text(strings['restore']),
+            icon: Icon(
+              textMode
+                  ? Icons.settings_backup_restore_rounded
+                  : Icons.auto_fix_high_outlined,
+            ),
+            label: Text(textMode ? strings['textRestore'] : strings['restore']),
           ),
         ],
         selected: {controller.mode},
@@ -588,6 +648,7 @@ class _ImportCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
+    final textMode = controller.workspaceType == WorkspaceType.text;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -595,8 +656,12 @@ class _ImportCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _SectionTitle(
-              icon: Icons.add_photo_alternate_outlined,
-              title: strings['importTitle'],
+              icon: textMode
+                  ? Icons.note_add_outlined
+                  : Icons.add_photo_alternate_outlined,
+              title: textMode
+                  ? strings['importTextTitle']
+                  : strings['importTitle'],
             ),
             const SizedBox(height: 14),
             AnimatedContainer(
@@ -628,23 +693,25 @@ class _ImportCard extends StatelessWidget {
                       Icons.cloud_upload_outlined,
                       size: 27,
                       color: scheme.primary,
-                      semanticLabel: strings['dropTitle'],
+                      semanticLabel: textMode
+                          ? strings['dropTextTitle']
+                          : strings['dropTitle'],
                     ),
                   ),
                   const SizedBox(height: 14),
                   Text(
-                    strings['dropTitle'],
+                    textMode ? strings['dropTextTitle'] : strings['dropTitle'],
                     textAlign: TextAlign.center,
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    strings['dropDesc'],
+                    textMode ? strings['dropTextDesc'] : strings['dropDesc'],
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 12,
                       height: 1.5,
-                      color: scheme.onSurface.withValues(alpha: 0.56),
+                      color: scheme.onSurface.withValues(alpha: 0.65),
                     ),
                   ),
                   const SizedBox(height: 18),
@@ -656,9 +723,18 @@ class _ImportCard extends StatelessWidget {
                       FilledButton.icon(
                         onPressed: controller.isProcessing
                             ? null
-                            : controller.pickImages,
-                        icon: const Icon(Icons.image_outlined, size: 19),
-                        label: Text(strings['chooseImages']),
+                            : controller.pickFiles,
+                        icon: Icon(
+                          textMode
+                              ? Icons.description_outlined
+                              : Icons.image_outlined,
+                          size: 19,
+                        ),
+                        label: Text(
+                          textMode
+                              ? strings['chooseText']
+                              : strings['chooseImages'],
+                        ),
                       ),
                       OutlinedButton.icon(
                         onPressed: controller.isProcessing
@@ -686,7 +762,6 @@ class _ConfigurationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
-    final scheme = Theme.of(context).colorScheme;
     final availableAlgorithms = controller.mode == ProcessMode.restore
         ? ScrambleAlgorithm.values
         : ScrambleAlgorithm.values.where((item) => !item.isAutomatic).toList();
@@ -701,64 +776,11 @@ class _ConfigurationCard extends StatelessWidget {
               title: strings['configuration'],
             ),
             const SizedBox(height: 16),
-            DropdownButtonFormField<ScrambleAlgorithm>(
-              initialValue: controller.algorithm,
-              isExpanded: true,
-              decoration: InputDecoration(
-                labelText: strings['algorithm'],
-                prefixIcon: const Icon(Icons.hub_outlined),
-              ),
-              items: [
-                for (final item in availableAlgorithms)
-                  DropdownMenuItem(
-                    value: item,
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            strings.algorithmName(item),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (item.isCompatibility)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 7,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: const Color(
-                                0xffff5f6d,
-                              ).withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(7),
-                            ),
-                            child: Text(
-                              strings['compatibility'],
-                              style: const TextStyle(
-                                color: Color(0xffff6b78),
-                                fontSize: 10,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-              ],
-              onChanged: controller.isProcessing
-                  ? null
-                  : (value) {
-                      if (value != null) controller.setAlgorithm(value);
-                    },
-            ),
-            const SizedBox(height: 9),
-            Text(
-              strings.algorithmDescription(controller.algorithm),
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.5,
-                color: scheme.onSurface.withValues(alpha: 0.58),
-              ),
+            _AlgorithmPickerField(
+              strings: strings,
+              selected: controller.algorithm,
+              algorithms: availableAlgorithms,
+              enabled: !controller.isProcessing,
             ),
             const SizedBox(height: 16),
             if (controller.mode == ProcessMode.scramble)
@@ -813,6 +835,451 @@ class _ConfigurationCard extends StatelessWidget {
   }
 }
 
+class _AlgorithmPickerField extends StatelessWidget {
+  const _AlgorithmPickerField({
+    required this.strings,
+    required this.selected,
+    required this.algorithms,
+    required this.enabled,
+  });
+
+  final AppStrings strings;
+  final ScrambleAlgorithm selected;
+  final Iterable<ScrambleAlgorithm> algorithms;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: '${strings['algorithm']}：${strings.algorithmName(selected)}',
+      hint: strings['tapToChange'],
+      child: Material(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.28),
+        borderRadius: BorderRadius.circular(15),
+        child: InkWell(
+          key: const ValueKey('algorithm-picker-field'),
+          onTap: enabled
+              ? () => _showAlgorithmPicker(
+                  context,
+                  strings: strings,
+                  algorithms: algorithms.toList(growable: false),
+                  selected: selected,
+                )
+              : null,
+          borderRadius: BorderRadius.circular(15),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 88),
+            padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+            child: Row(
+              children: [
+                _AlgorithmIcon(algorithm: selected, size: 46),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        strings['algorithm'],
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          color: scheme.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              strings.algorithmName(selected),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                          if (selected.isCompatibility) ...[
+                            const SizedBox(width: 7),
+                            _CompatibilityBadge(strings: strings),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        strings.algorithmDescription(selected),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.unfold_more_rounded,
+                      size: 21,
+                      color: enabled
+                          ? scheme.primary
+                          : scheme.onSurface.withValues(alpha: 0.28),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      strings['tapToChange'],
+                      style: TextStyle(
+                        fontSize: 9.5,
+                        color: scheme.onSurface.withValues(alpha: 0.65),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _showAlgorithmPicker(
+  BuildContext context, {
+  required AppStrings strings,
+  required List<ScrambleAlgorithm> algorithms,
+  required ScrambleAlgorithm selected,
+}) {
+  final compact =
+      Theme.of(context).platform == TargetPlatform.android ||
+      MediaQuery.sizeOf(context).width < 600;
+  if (compact) {
+    return showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.58),
+      builder: (context) => FractionallySizedBox(
+        heightFactor: 0.92,
+        child: _AlgorithmPickerPanel(
+          strings: strings,
+          algorithms: algorithms,
+          selected: selected,
+          compact: true,
+        ),
+      ),
+    );
+  }
+  return showDialog<void>(
+    context: context,
+    barrierColor: Colors.black.withValues(alpha: 0.58),
+    builder: (context) => Dialog(
+      insetPadding: const EdgeInsets.all(32),
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820, maxHeight: 760),
+        child: _AlgorithmPickerPanel(
+          strings: strings,
+          algorithms: algorithms,
+          selected: selected,
+          compact: false,
+        ),
+      ),
+    ),
+  );
+}
+
+class _AlgorithmPickerPanel extends StatelessWidget {
+  const _AlgorithmPickerPanel({
+    required this.strings,
+    required this.algorithms,
+    required this.selected,
+    required this.compact,
+  });
+
+  final AppStrings strings;
+  final List<ScrambleAlgorithm> algorithms;
+  final ScrambleAlgorithm selected;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surface,
+      borderRadius: compact
+          ? const BorderRadius.vertical(top: Radius.circular(26))
+          : BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          if (compact) ...[
+            const SizedBox(height: 10),
+            Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: scheme.outline.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ],
+          Padding(
+            padding: EdgeInsets.fromLTRB(22, compact ? 16 : 22, 12, 18),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: scheme.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(Icons.hub_outlined, color: scheme.primary),
+                ),
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        strings['chooseAlgorithm'],
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        strings['chooseAlgorithmDesc'],
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: scheme.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: strings['close'],
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+          ),
+          Divider(height: 1, color: scheme.outlineVariant),
+          Expanded(
+            child: compact
+                ? ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+                    itemCount: algorithms.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) => _AlgorithmChoiceCard(
+                      algorithm: algorithms[index],
+                      selected: algorithms[index] == selected,
+                      strings: strings,
+                      compact: true,
+                    ),
+                  )
+                : GridView.builder(
+                    padding: const EdgeInsets.all(20),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                          mainAxisExtent: 136,
+                        ),
+                    itemCount: algorithms.length,
+                    itemBuilder: (context, index) => _AlgorithmChoiceCard(
+                      algorithm: algorithms[index],
+                      selected: algorithms[index] == selected,
+                      strings: strings,
+                      compact: false,
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlgorithmChoiceCard extends StatelessWidget {
+  const _AlgorithmChoiceCard({
+    required this.algorithm,
+    required this.selected,
+    required this.strings,
+    required this.compact,
+  });
+
+  final ScrambleAlgorithm algorithm;
+  final bool selected;
+  final AppStrings strings;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: strings.algorithmName(algorithm),
+      child: Material(
+        color: selected
+            ? scheme.primary.withValues(alpha: 0.11)
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.24),
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          key: ValueKey('algorithm-choice-${algorithm.id}'),
+          onTap: () {
+            context.read<AppController>().setAlgorithm(algorithm);
+            Navigator.of(context).pop();
+          },
+          borderRadius: BorderRadius.circular(16),
+          child: Container(
+            padding: EdgeInsets.all(compact ? 14 : 15),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: selected ? scheme.primary : scheme.outlineVariant,
+                width: selected ? 1.5 : 1,
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _AlgorithmIcon(algorithm: algorithm, size: compact ? 44 : 46),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              strings.algorithmName(algorithm),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                          if (selected)
+                            Icon(
+                              Icons.check_circle_rounded,
+                              size: 20,
+                              color: scheme.primary,
+                              semanticLabel: strings['selected'],
+                            ),
+                        ],
+                      ),
+                      if (algorithm.isCompatibility) ...[
+                        const SizedBox(height: 5),
+                        _CompatibilityBadge(strings: strings),
+                      ],
+                      const SizedBox(height: 6),
+                      Text(
+                        strings.algorithmDescription(algorithm),
+                        maxLines: algorithm.isCompatibility ? 2 : 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11,
+                          height: 1.42,
+                          color: scheme.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AlgorithmIcon extends StatelessWidget {
+  const _AlgorithmIcon({required this.algorithm, required this.size});
+
+  final ScrambleAlgorithm algorithm;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final icon = switch (algorithm) {
+      ScrambleAlgorithm.auto => Icons.auto_awesome_rounded,
+      ScrambleAlgorithm.blockShuffle => Icons.grid_4x4_rounded,
+      ScrambleAlgorithm.rowShift => Icons.view_stream_outlined,
+      ScrambleAlgorithm.columnShift => Icons.view_column_outlined,
+      ScrambleAlgorithm.pixelPermutation => Icons.grain_rounded,
+      ScrambleAlgorithm.channelDisturbance => Icons.palette_outlined,
+      ScrambleAlgorithm.composite => Icons.hub_outlined,
+      ScrambleAlgorithm.cherryTomato => Icons.route_outlined,
+    };
+    final color = algorithm.isCompatibility
+        ? const Color(0xffff6b78)
+        : scheme.primary;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(size * 0.3),
+      ),
+      alignment: Alignment.center,
+      child: Icon(icon, size: size * 0.48, color: color),
+    );
+  }
+}
+
+class _CompatibilityBadge extends StatelessWidget {
+  const _CompatibilityBadge({required this.strings});
+
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xffff5f6d).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: Text(
+        strings['compatibility'],
+        style: const TextStyle(
+          color: Color(0xffff6b78),
+          fontSize: 9.5,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
 class _PasswordField extends StatefulWidget {
   const _PasswordField({required this.strings});
   final AppStrings strings;
@@ -858,6 +1325,7 @@ class _QueueCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
+    final textMode = controller.workspaceType == WorkspaceType.text;
     final listHeight = controller.tasks.isEmpty
         ? 260.0
         : math.min(470.0, 82.0 * controller.tasks.length + 16);
@@ -871,8 +1339,10 @@ class _QueueCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _SectionTitle(
-                    icon: Icons.photo_library_outlined,
-                    title: strings['queue'],
+                    icon: textMode
+                        ? Icons.library_books_outlined
+                        : Icons.photo_library_outlined,
+                    title: textMode ? strings['textQueue'] : strings['queue'],
                   ),
                 ),
                 Container(
@@ -885,7 +1355,8 @@ class _QueueCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Text(
-                    '${controller.tasks.length} ${strings['files']}',
+                    '${controller.tasks.length} '
+                    '${textMode ? strings['textFiles'] : strings['files']}',
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
@@ -908,7 +1379,7 @@ class _QueueCard extends StatelessWidget {
             SizedBox(
               height: listHeight,
               child: controller.tasks.isEmpty
-                  ? _EmptyQueue(strings: strings)
+                  ? _EmptyQueue(strings: strings, textMode: textMode)
                   : Scrollbar(
                       child: ListView.separated(
                         padding: const EdgeInsets.only(right: 4),
@@ -917,6 +1388,7 @@ class _QueueCard extends StatelessWidget {
                         itemBuilder: (context, index) => _TaskRow(
                           task: controller.tasks[index],
                           strings: strings,
+                          textMode: textMode,
                         ),
                       ),
                     ),
@@ -937,7 +1409,7 @@ class _QueueCard extends StatelessWidget {
                             controller.failedCount > 0 ||
                                 controller.detailMessage != null
                             ? scheme.error
-                            : scheme.onSurface.withValues(alpha: 0.62),
+                            : scheme.onSurface.withValues(alpha: 0.65),
                       ),
                     ),
                   ),
@@ -981,6 +1453,10 @@ class _QueueCard extends StatelessWidget {
               icon: Icon(
                 controller.isProcessing
                     ? Icons.stop_circle_outlined
+                    : textMode
+                    ? (controller.mode == ProcessMode.scramble
+                          ? Icons.code_rounded
+                          : Icons.settings_backup_restore_rounded)
                     : controller.mode == ProcessMode.scramble
                     ? Icons.grid_view_rounded
                     : Icons.auto_fix_high_outlined,
@@ -988,6 +1464,10 @@ class _QueueCard extends StatelessWidget {
               label: Text(
                 controller.isProcessing
                     ? strings['cancel']
+                    : textMode
+                    ? (controller.mode == ProcessMode.scramble
+                          ? strings['startTextEncode']
+                          : strings['startTextRestore'])
                     : controller.mode == ProcessMode.scramble
                     ? strings['startScramble']
                     : strings['startRestore'],
@@ -1001,8 +1481,9 @@ class _QueueCard extends StatelessWidget {
 }
 
 class _EmptyQueue extends StatelessWidget {
-  const _EmptyQueue({required this.strings});
+  const _EmptyQueue({required this.strings, required this.textMode});
   final AppStrings strings;
+  final bool textMode;
 
   @override
   Widget build(BuildContext context) {
@@ -1018,23 +1499,27 @@ class _EmptyQueue extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.photo_size_select_actual_outlined,
+            textMode
+                ? Icons.description_outlined
+                : Icons.photo_size_select_actual_outlined,
             size: 38,
             color: scheme.onSurface.withValues(alpha: 0.28),
           ),
           const SizedBox(height: 12),
           Text(
-            strings['emptyQueue'],
+            textMode ? strings['emptyTextQueue'] : strings['emptyQueue'],
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 6),
           Text(
-            strings['emptyQueueDesc'],
+            textMode
+                ? strings['emptyTextQueueDesc']
+                : strings['emptyQueueDesc'],
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12,
               height: 1.5,
-              color: scheme.onSurface.withValues(alpha: 0.52),
+              color: scheme.onSurface.withValues(alpha: 0.65),
             ),
           ),
         ],
@@ -1044,9 +1529,14 @@ class _EmptyQueue extends StatelessWidget {
 }
 
 class _TaskRow extends StatelessWidget {
-  const _TaskRow({required this.task, required this.strings});
+  const _TaskRow({
+    required this.task,
+    required this.strings,
+    required this.textMode,
+  });
   final ImageTask task;
   final AppStrings strings;
+  final bool textMode;
 
   @override
   Widget build(BuildContext context) {
@@ -1054,7 +1544,7 @@ class _TaskRow extends StatelessWidget {
     final (icon, color, label) = switch (task.status) {
       TaskStatus.queued => (
         Icons.schedule_rounded,
-        scheme.onSurface.withValues(alpha: 0.45),
+        scheme.onSurface.withValues(alpha: 0.65),
         strings['queued'],
       ),
       TaskStatus.processing => (
@@ -1096,7 +1586,11 @@ class _TaskRow extends StatelessWidget {
               color: scheme.primary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(Icons.image_outlined, size: 20, color: scheme.primary),
+            child: Icon(
+              textMode ? Icons.description_outlined : Icons.image_outlined,
+              size: 20,
+              color: scheme.primary,
+            ),
           ),
           const SizedBox(width: 11),
           Expanded(
@@ -1120,7 +1614,7 @@ class _TaskRow extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 10.5,
                     color: task.error == null
-                        ? scheme.onSurface.withValues(alpha: 0.48)
+                        ? scheme.onSurface.withValues(alpha: 0.65)
                         : scheme.error,
                   ),
                 ),

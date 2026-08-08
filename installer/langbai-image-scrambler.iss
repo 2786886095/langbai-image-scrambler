@@ -1,5 +1,5 @@
 #define MyAppName "Langbai 图片混淆"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Langbai"
 #define MyAppExeName "langbai_image_scrambler.exe"
 

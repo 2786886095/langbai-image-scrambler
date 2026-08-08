@@ -49,6 +49,7 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("relativeFolder") ?: "",
                     call.argument<String>("fileName") ?: "image.png",
                     call.argument<String>("sourcePath")!!,
+                    call.argument<String>("mimeType") ?: "image/png",
                 ).toString()
             }
             "saveDocument" -> saveDocument(call, result)
@@ -82,7 +83,7 @@ class MainActivity : FlutterActivity() {
         pendingSaveSourcePath = call.argument<String>("sourcePath")
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "image/png"
+            type = call.argument<String>("mimeType") ?: "image/png"
             putExtra(Intent.EXTRA_TITLE, call.argument<String>("suggestedName") ?: "image.png")
         }
         startActivityForResult(intent, REQUEST_SAVE)
@@ -194,6 +195,7 @@ class MainActivity : FlutterActivity() {
         relativeFolder: String,
         fileName: String,
         sourcePath: String,
+        mimeType: String,
     ): Uri {
         var parentId = DocumentsContract.getTreeDocumentId(treeUri)
         for (segment in relativeFolder.split('/').filter { it.isNotBlank() }) {
@@ -214,7 +216,7 @@ class MainActivity : FlutterActivity() {
             DocumentsContract.createDocument(
                 contentResolver,
                 DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId),
-                "image/png",
+                mimeType,
                 fileName,
             ) ?: error("无法建立输出图片：$fileName")
         }
@@ -263,7 +265,7 @@ class MainActivity : FlutterActivity() {
 
     private fun isSupportedName(name: String): Boolean {
         val extension = name.substringAfterLast('.', "").lowercase()
-        return extension in setOf("png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff")
+        return extension in setOf("png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "txt")
     }
 
     private fun runInBackground(result: MethodChannel.Result, block: () -> Any?) {

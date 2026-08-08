@@ -5,6 +5,7 @@ import 'app_settings.dart';
 import 'file_service.dart';
 import 'image_processor.dart';
 import 'models.dart';
+import 'text_processor.dart';
 import 'update_service.dart';
 
 class AppController extends ChangeNotifier {
@@ -12,17 +13,21 @@ class AppController extends ChangeNotifier {
     this._settings, {
     FileService? fileService,
     ImageProcessor? imageProcessor,
+    TextProcessor? textProcessor,
     UpdateService? updateService,
   }) : _fileService = fileService ?? FileService(),
        _imageProcessor = imageProcessor ?? ImageProcessor(),
+       _textProcessor = textProcessor ?? const TextProcessor(),
        _updateService = updateService ?? UpdateService();
 
   final AppSettings _settings;
   final FileService _fileService;
   final ImageProcessor _imageProcessor;
+  final TextProcessor _textProcessor;
   final UpdateService _updateService;
 
   ProcessMode mode = ProcessMode.scramble;
+  WorkspaceType workspaceType = WorkspaceType.image;
   ScrambleAlgorithm algorithm = ScrambleAlgorithm.composite;
   ImportBatch? batch;
   bool passwordEnabled = false;
@@ -58,6 +63,21 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setWorkspaceType(WorkspaceType value) {
+    if (isProcessing || workspaceType == value) return;
+    workspaceType = value;
+    mode = ProcessMode.scramble;
+    algorithm = ScrambleAlgorithm.composite;
+    passwordEnabled = false;
+    password = '';
+    manualSeed = '';
+    batch = null;
+    progress = 0;
+    statusKey = 'ready';
+    detailMessage = null;
+    notifyListeners();
+  }
+
   void setAlgorithm(ScrambleAlgorithm value) {
     if (isProcessing || algorithm == value) return;
     algorithm = value;
@@ -75,16 +95,22 @@ class AppController extends ChangeNotifier {
   void setPassword(String value) => password = value;
   void setManualSeed(String value) => manualSeed = value;
 
-  Future<void> pickImages() async {
-    await _runImport(_fileService.pickImages);
+  Future<void> pickFiles() async {
+    await _runImport(() => _fileService.pickFiles(workspaceType));
   }
 
+  Future<void> pickImages() => pickFiles();
+
   Future<void> pickFolder() async {
-    await _runImport(_fileService.pickFolder);
+    await _runImport(
+      () => _fileService.pickFolder(workspaceType: workspaceType),
+    );
   }
 
   Future<void> importDropped(List<XFile> files) async {
-    await _runImport(() => _fileService.importDropped(files));
+    await _runImport(
+      () => _fileService.importDropped(files, workspaceType: workspaceType),
+    );
   }
 
   Future<void> _runImport(Future<ImportBatch?> Function() action) async {
@@ -95,7 +121,11 @@ class AppController extends ChangeNotifier {
       if (imported == null) return;
       batch = imported;
       progress = 0;
-      statusKey = imported.tasks.isEmpty ? 'folderEmpty' : 'ready';
+      statusKey = imported.tasks.isEmpty
+          ? (workspaceType == WorkspaceType.text
+                ? 'textFolderEmpty'
+                : 'folderEmpty')
+          : 'ready';
     } catch (error) {
       detailMessage = _errorText(error);
     }
@@ -122,6 +152,7 @@ class AppController extends ChangeNotifier {
       tasks: retry,
       isFolder: batch!.isFolder,
       rootName: batch!.rootName,
+      workspaceType: batch!.workspaceType,
     );
     progress = 0;
     statusKey = 'ready';
@@ -140,7 +171,8 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (mode == ProcessMode.scramble &&
+    if (workspaceType == WorkspaceType.image &&
+        mode == ProcessMode.scramble &&
         passwordEnabled &&
         password.trim().isEmpty) {
       statusKey = 'invalidPassword';
@@ -150,7 +182,8 @@ class AppController extends ChangeNotifier {
     final parsedSeed = manualSeed.trim().isEmpty
         ? null
         : int.tryParse(manualSeed.trim());
-    if (mode == ProcessMode.restore &&
+    if (workspaceType == WorkspaceType.image &&
+        mode == ProcessMode.restore &&
         algorithm.needsSeed &&
         parsedSeed == null) {
       statusKey = 'invalidSeed';
@@ -183,13 +216,23 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       try {
         final input = await _fileService.readTask(task);
-        final result = await _processOne(input, task, parsedSeed);
-        task.detectedAlgorithmId = result.algorithm.id;
+        late final Uint8List outputBytes;
+        if (workspaceType == WorkspaceType.image) {
+          final result = await _processOne(input, task, parsedSeed);
+          task.detectedAlgorithmId = result.algorithm.id;
+          outputBytes = Uint8List.fromList(result.bytes);
+        } else {
+          outputBytes = mode == ProcessMode.scramble
+              ? await _textProcessor.encode(input)
+              : await _textProcessor.restore(input);
+          task.detectedAlgorithmId = 'base64';
+        }
         task.outputLocation = await _fileService.saveOutput(
-          bytes: Uint8List.fromList(result.bytes),
+          bytes: outputBytes,
           task: task,
           mode: mode,
           target: target,
+          workspaceType: workspaceType,
         );
         task.status = TaskStatus.completed;
       } catch (error) {
@@ -265,6 +308,7 @@ class AppController extends ChangeNotifier {
   String _errorText(Object error) {
     if (error is ImageProcessingException) return error.message;
     if (error is FileServiceException) return error.message;
+    if (error is TextProcessingException) return error.message;
     return error.toString().replaceFirst('Exception: ', '');
   }
 }

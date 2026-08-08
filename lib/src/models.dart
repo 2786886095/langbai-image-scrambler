@@ -2,6 +2,8 @@ import 'dart:io';
 
 enum ProcessMode { scramble, restore }
 
+enum WorkspaceType { image, text }
+
 enum ScrambleAlgorithm {
   auto,
   blockShuffle,
@@ -83,11 +85,13 @@ class ImportBatch {
     required this.tasks,
     required this.isFolder,
     required this.rootName,
+    this.workspaceType = WorkspaceType.image,
   });
 
   final List<ImageTask> tasks;
   final bool isFolder;
   final String rootName;
+  final WorkspaceType workspaceType;
 }
 
 class ProcessedImage {
@@ -130,6 +134,8 @@ bool isSupportedImageName(String name) {
     'tiff',
   }.contains(extension);
 }
+
+bool isSupportedTextName(String name) => name.toLowerCase().endsWith('.txt');
 
 String basenameWithoutExtension(String name) {
   final index = name.lastIndexOf('.');

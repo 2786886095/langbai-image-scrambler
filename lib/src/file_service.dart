@@ -9,7 +9,7 @@ import 'models.dart';
 
 class FileService {
   static const _channel = MethodChannel('com.langbai.imagescrambler/saf');
-  static const _extensions = [
+  static const _imageExtensions = [
     'png',
     'jpg',
     'jpeg',
@@ -19,12 +19,13 @@ class FileService {
     'tiff',
   ];
 
-  Future<ImportBatch?> pickImages() async {
+  Future<ImportBatch?> pickFiles(WorkspaceType workspaceType) async {
+    final textMode = workspaceType == WorkspaceType.text;
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
       type: FileType.custom,
-      allowedExtensions: _extensions,
-      dialogTitle: '选择图片',
+      allowedExtensions: textMode ? const ['txt'] : _imageExtensions,
+      dialogTitle: textMode ? '选择小说 TXT' : '选择图片',
       withData: false,
       withReadStream: false,
     );
@@ -46,19 +47,33 @@ class FileService {
       );
     }
     if (tasks.isEmpty) return null;
-    return ImportBatch(tasks: tasks, isFolder: false, rootName: '');
+    return ImportBatch(
+      tasks: tasks,
+      isFolder: false,
+      rootName: '',
+      workspaceType: workspaceType,
+    );
   }
 
-  Future<ImportBatch?> pickFolder() async {
-    if (Platform.isAndroid) return _pickAndroidFolder();
+  Future<ImportBatch?> pickImages() => pickFiles(WorkspaceType.image);
+
+  Future<ImportBatch?> pickFolder({
+    WorkspaceType workspaceType = WorkspaceType.image,
+  }) async {
+    if (Platform.isAndroid) return _pickAndroidFolder(workspaceType);
     final selected = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择图片文件夹',
+      dialogTitle: workspaceType == WorkspaceType.text
+          ? '选择小说 TXT 文件夹'
+          : '选择图片文件夹',
     );
     if (selected == null) return null;
-    return importFolderPath(selected);
+    return importFolderPath(selected, workspaceType: workspaceType);
   }
 
-  Future<ImportBatch> importFolderPath(String folderPath) async {
+  Future<ImportBatch> importFolderPath(
+    String folderPath, {
+    WorkspaceType workspaceType = WorkspaceType.image,
+  }) async {
     final directory = Directory(folderPath);
     if (!await directory.exists()) {
       throw const FileServiceException('文件夹不存在');
@@ -70,7 +85,9 @@ class FileService {
       recursive: true,
       followLinks: false,
     )) {
-      if (entity is! File || !isSupportedImageName(entity.path)) continue;
+      if (entity is! File || !_isSupported(entity.path, workspaceType)) {
+        continue;
+      }
       final relative = path.relative(
         path.dirname(entity.path),
         from: directory.path,
@@ -91,19 +108,29 @@ class FileService {
       final b = path.join(right.relativeDirectory, right.originalName);
       return a.toLowerCase().compareTo(b.toLowerCase());
     });
-    return ImportBatch(tasks: tasks, isFolder: true, rootName: rootName);
+    return ImportBatch(
+      tasks: tasks,
+      isFolder: true,
+      rootName: rootName,
+      workspaceType: workspaceType,
+    );
   }
 
-  Future<ImportBatch?> importDropped(List<XFile> dropped) async {
+  Future<ImportBatch?> importDropped(
+    List<XFile> dropped, {
+    WorkspaceType workspaceType = WorkspaceType.image,
+  }) async {
     if (dropped.isEmpty) return null;
     if (dropped.length == 1 && await Directory(dropped.first.path).exists()) {
-      return importFolderPath(dropped.first.path);
+      return importFolderPath(dropped.first.path, workspaceType: workspaceType);
     }
     final tasks = <ImageTask>[];
     var index = 0;
     for (final item in dropped) {
       final file = File(item.path);
-      if (!await file.exists() || !isSupportedImageName(item.path)) continue;
+      if (!await file.exists() || !_isSupported(item.path, workspaceType)) {
+        continue;
+      }
       tasks.add(
         ImageTask(
           id: '${DateTime.now().microsecondsSinceEpoch}-${index++}',
@@ -117,7 +144,12 @@ class FileService {
     }
     return tasks.isEmpty
         ? null
-        : ImportBatch(tasks: tasks, isFolder: false, rootName: '');
+        : ImportBatch(
+            tasks: tasks,
+            isFolder: false,
+            rootName: '',
+            workspaceType: workspaceType,
+          );
   }
 
   Future<Uint8List> readTask(ImageTask task) async {
@@ -145,7 +177,7 @@ class FileService {
     final single = batch.tasks.length == 1 && !batch.isFolder;
     final rootFolderName = batch.isFolder
         ? sanitizeFileName(batch.rootName)
-        : _batchFolderName(mode);
+        : _batchFolderName(mode, batch.workspaceType);
 
     if (Platform.isAndroid) {
       if (single && settings.askExportEveryTime) {
@@ -171,7 +203,11 @@ class FileService {
     }
 
     if (single) {
-      final suggestedName = outputFileName(batch.tasks.first, mode);
+      final suggestedName = outputFileName(
+        batch.tasks.first,
+        mode,
+        workspaceType: batch.workspaceType,
+      );
       if (!settings.askExportEveryTime && settings.defaultExportPath != null) {
         return ExportTarget(
           path: path.join(settings.defaultExportPath!, suggestedName),
@@ -209,8 +245,12 @@ class FileService {
     required ImageTask task,
     required ProcessMode mode,
     required ExportTarget target,
+    WorkspaceType workspaceType = WorkspaceType.image,
   }) async {
-    final fileName = outputFileName(task, mode);
+    final fileName = outputFileName(task, mode, workspaceType: workspaceType);
+    final mimeType = workspaceType == WorkspaceType.text
+        ? 'text/plain'
+        : 'image/png';
     if (!Platform.isAndroid) {
       final outputPath = target.singleFile
           ? target.path!
@@ -230,7 +270,8 @@ class FileService {
     final temporaryFile = File(
       path.join(
         temporaryDirectory.path,
-        'langbai-output-${DateTime.now().microsecondsSinceEpoch}.png',
+        'langbai-output-${DateTime.now().microsecondsSinceEpoch}'
+        '${workspaceType == WorkspaceType.text ? '.txt' : '.png'}',
       ),
     );
     await temporaryFile.writeAsBytes(bytes, flush: true);
@@ -238,6 +279,7 @@ class FileService {
       final uri = await _channel.invokeMethod<String>('saveDocument', {
         'sourcePath': temporaryFile.path,
         'suggestedName': fileName,
+        'mimeType': mimeType,
       });
       if (uri == null) throw const ExportCancelledException();
       return uri;
@@ -251,6 +293,7 @@ class FileService {
       'relativeFolder': relativeFolder,
       'fileName': fileName,
       'sourcePath': temporaryFile.path,
+      'mimeType': mimeType,
     });
     if (uri == null) throw const FileServiceException('写入 Android 文件夹失败');
     return uri;
@@ -269,8 +312,22 @@ class FileService {
     return DefaultExportSelection(path: selected, label: selected);
   }
 
-  String outputFileName(ImageTask task, ProcessMode mode) {
+  String outputFileName(
+    ImageTask task,
+    ProcessMode mode, {
+    WorkspaceType workspaceType = WorkspaceType.image,
+  }) {
     var base = basenameWithoutExtension(task.originalName);
+    if (workspaceType == WorkspaceType.text) {
+      if (mode == ProcessMode.restore) {
+        base = base.replaceFirst(
+          RegExp(r'[_-](混淆|混淆文|encoded|base64)$', caseSensitive: false),
+          '',
+        );
+        return '${sanitizeFileName(base)}_还原.txt';
+      }
+      return '${sanitizeFileName(base)}_混淆.txt';
+    }
     if (mode == ProcessMode.restore) {
       base = base.replaceFirst(RegExp(r'[_-](混淆|混淆圖|scrambled)$'), '');
       return '${sanitizeFileName(base)}_还原.png';
@@ -278,16 +335,19 @@ class FileService {
     return '${sanitizeFileName(base)}_混淆.png';
   }
 
-  String _batchFolderName(ProcessMode mode) {
+  String _batchFolderName(ProcessMode mode, WorkspaceType workspaceType) {
     final now = DateTime.now();
     String two(int value) => value.toString().padLeft(2, '0');
     final stamp =
         '${now.year}${two(now.month)}${two(now.day)}_'
         '${two(now.hour)}${two(now.minute)}${two(now.second)}';
-    return 'Langbai_${mode == ProcessMode.scramble ? '混淆' : '还原'}_$stamp';
+    final action = workspaceType == WorkspaceType.text
+        ? (mode == ProcessMode.scramble ? 'TXT转码' : 'TXT恢复')
+        : (mode == ProcessMode.scramble ? '混淆' : '还原');
+    return 'Langbai_${action}_$stamp';
   }
 
-  Future<ImportBatch?> _pickAndroidFolder() async {
+  Future<ImportBatch?> _pickAndroidFolder(WorkspaceType workspaceType) async {
     final tree = await _pickTree();
     if (tree == null) return null;
     final result = await _channel.invokeMapMethod<String, dynamic>('listTree', {
@@ -299,7 +359,7 @@ class FileService {
     for (var index = 0; index < items.length; index++) {
       final item = Map<String, dynamic>.from(items[index] as Map);
       final name = item['name'] as String? ?? '';
-      if (!isSupportedImageName(name)) continue;
+      if (!_isSupported(name, workspaceType)) continue;
       tasks.add(
         ImageTask(
           id: '${DateTime.now().microsecondsSinceEpoch}-$index',
@@ -311,7 +371,18 @@ class FileService {
         ),
       );
     }
-    return ImportBatch(tasks: tasks, isFolder: true, rootName: tree.name);
+    return ImportBatch(
+      tasks: tasks,
+      isFolder: true,
+      rootName: tree.name,
+      workspaceType: workspaceType,
+    );
+  }
+
+  bool _isSupported(String name, WorkspaceType workspaceType) {
+    return workspaceType == WorkspaceType.text
+        ? isSupportedTextName(name)
+        : isSupportedImageName(name);
   }
 
   Future<_AndroidTree?> _pickTree() async {

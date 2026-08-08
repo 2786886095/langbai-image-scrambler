@@ -7,7 +7,9 @@ import 'app_strings.dart';
 import 'home_screen.dart';
 
 class LangbaiApp extends StatelessWidget {
-  const LangbaiApp({super.key});
+  const LangbaiApp({super.key, this.platformOverride});
+
+  final TargetPlatform? platformOverride;
 
   @override
   Widget build(BuildContext context) {
@@ -30,13 +32,17 @@ class LangbaiApp extends StatelessWidget {
         AppThemePreference.light => ThemeMode.light,
         AppThemePreference.dark => ThemeMode.dark,
       },
-      theme: _theme(Brightness.light, settings.language),
-      darkTheme: _theme(Brightness.dark, settings.language),
+      theme: _theme(Brightness.light, settings.language, platformOverride),
+      darkTheme: _theme(Brightness.dark, settings.language, platformOverride),
       home: const HomeScreen(),
     );
   }
 
-  ThemeData _theme(Brightness brightness, AppLanguage language) {
+  ThemeData _theme(
+    Brightness brightness,
+    AppLanguage language,
+    TargetPlatform? platformOverride,
+  ) {
     final dark = brightness == Brightness.dark;
     final appFontFamily = language == AppLanguage.traditional
         ? 'NotoSansCJKTC'
@@ -82,6 +88,7 @@ class LangbaiApp extends StatelessWidget {
         'sans-serif',
       ],
       visualDensity: VisualDensity.standard,
+      platform: platformOverride,
     );
     return base.copyWith(
       cardTheme: CardThemeData(

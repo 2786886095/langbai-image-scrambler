@@ -62,4 +62,52 @@ void main() {
       '示例_还原.png',
     );
   });
+
+  test(
+    'TXT folder keeps its original root name and nested structure',
+    () async {
+      final temporary = await Directory.systemTemp.createTemp(
+        'langbai-text-file-test-',
+      );
+      addTearDown(() async {
+        if (await temporary.exists()) await temporary.delete(recursive: true);
+      });
+      final source = Directory(path.join(temporary.path, '小说合集'));
+      final nested = Directory(path.join(source.path, '长篇'));
+      await nested.create(recursive: true);
+      await File(path.join(source.path, '短篇.txt')).writeAsString('短篇');
+      await File(path.join(nested.path, '第一部.TXT')).writeAsString('第一部');
+      await File(path.join(nested.path, '封面.png')).writeAsBytes([1, 2, 3]);
+
+      final service = FileService();
+      final batch = await service.importFolderPath(
+        source.path,
+        workspaceType: WorkspaceType.text,
+      );
+      expect(batch.workspaceType, WorkspaceType.text);
+      expect(batch.rootName, '小说合集');
+      expect(batch.tasks, hasLength(2));
+      final nestedTask = batch.tasks.singleWhere(
+        (task) => task.originalName == '第一部.TXT',
+      );
+      expect(nestedTask.relativeDirectory, '长篇');
+
+      final exportBase = Directory(path.join(temporary.path, 'export'));
+      final location = await service.saveOutput(
+        bytes: Uint8List.fromList(asciiBytes('encoded')),
+        task: nestedTask,
+        mode: ProcessMode.scramble,
+        target: ExportTarget(
+          path: exportBase.path,
+          rootFolderName: batch.rootName,
+          singleFile: false,
+        ),
+        workspaceType: WorkspaceType.text,
+      );
+      expect(location, path.join(exportBase.path, '小说合集', '长篇', '第一部_混淆.txt'));
+      expect(await File(location).readAsString(), 'encoded');
+    },
+  );
 }
+
+List<int> asciiBytes(String value) => value.codeUnits;
