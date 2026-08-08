@@ -4,10 +4,12 @@ import 'package:cross_file/cross_file.dart';
 import 'package:flutter/foundation.dart';
 
 import 'app_settings.dart';
+import 'archive_service.dart';
 import 'export_history.dart';
 import 'file_service.dart';
 import 'image_processor.dart';
 import 'models.dart';
+import 'password_vault.dart';
 import 'text_processor.dart';
 import 'update_service.dart';
 
@@ -19,11 +21,14 @@ class AppController extends ChangeNotifier {
     TextProcessor? textProcessor,
     UpdateService? updateService,
     ExportHistoryStore? historyStore,
+    ArchiveService? archiveService,
+    this._passwordVault,
   }) : _fileService = fileService ?? FileService(),
        _imageProcessor = imageProcessor ?? ImageProcessor(),
        _textProcessor = textProcessor ?? const TextProcessor(),
        _updateService = updateService ?? UpdateService(),
-       _historyStore = historyStore ?? ExportHistoryStore.memory() {
+       _historyStore = historyStore ?? ExportHistoryStore.memory(),
+       _archiveService = archiveService ?? ArchiveService() {
     workspaceType = _settings.lastWorkspaceType;
     mode = _settings.lastProcessMode;
     algorithm = _settings.lastAlgorithm;
@@ -35,6 +40,7 @@ class AppController extends ChangeNotifier {
         workspaceType == WorkspaceType.image &&
         mode == ProcessMode.scramble &&
         !algorithm.isCompatibility;
+    unawaited(_fileService.initializeSharedImports(_enqueueSharedImport));
   }
 
   final AppSettings _settings;
@@ -43,6 +49,8 @@ class AppController extends ChangeNotifier {
   final TextProcessor _textProcessor;
   final UpdateService _updateService;
   final ExportHistoryStore _historyStore;
+  final ArchiveService _archiveService;
+  final PasswordVault? _passwordVault;
 
   late ProcessMode mode;
   late WorkspaceType workspaceType;
@@ -59,6 +67,8 @@ class AppController extends ChangeNotifier {
   UpdateInfo? availableUpdate;
   bool checkingUpdate = false;
   String? undoingHistoryId;
+  bool detailMessageIsError = false;
+  final List<SharedImportRequest> _pendingSharedImports = [];
 
   List<ImageTask> get tasks => batch?.tasks ?? const [];
   int get completedCount =>
@@ -71,6 +81,20 @@ class AppController extends ChangeNotifier {
   List<ExportHistoryEntry> get exportHistory => _historyStore.entries;
   int get effectiveProcessingConcurrency =>
       _settings.effectiveProcessingConcurrency;
+  SharedImportRequest? get pendingSharedImport =>
+      _pendingSharedImports.isEmpty ? null : _pendingSharedImports.first;
+  bool get hasMixedBatch => batch?.isMixed ?? false;
+  bool get compressionEnabled => _settings.compressionEnabled;
+  CompressionArchiveFormat get compressionFormat => _settings.compressionFormat;
+  CompressionGrouping get compressionGrouping => _settings.compressionGrouping;
+  List<PasswordProfile> get archivePasswordProfiles =>
+      _passwordVault?.profiles ?? const [];
+  PasswordProfile? get selectedArchivePasswordProfile =>
+      _passwordVault?.find(_settings.selectedArchivePasswordProfileId);
+  bool get canUseCompression =>
+      mode == ProcessMode.scramble &&
+      batch?.containsText != true &&
+      workspaceType == WorkspaceType.image;
 
   void setMode(ProcessMode value) {
     if (isProcessing || mode == value) return;
@@ -87,7 +111,12 @@ class AppController extends ChangeNotifier {
   }
 
   void setWorkspaceType(WorkspaceType value) {
-    if (isProcessing || workspaceType == value) return;
+    if (isProcessing ||
+        value == WorkspaceType.mixed ||
+        workspaceType == value) {
+      return;
+    }
+    final temporaryRoots = batch?.temporaryRoots ?? const <String>[];
     workspaceType = value;
     mode = ProcessMode.scramble;
     algorithm = ScrambleAlgorithm.composite;
@@ -98,6 +127,8 @@ class AppController extends ChangeNotifier {
     progress = 0;
     statusKey = 'ready';
     detailMessage = null;
+    detailMessageIsError = false;
+    unawaited(_fileService.cleanupTemporaryRoots(temporaryRoots));
     _persistProcessingDefaults();
     notifyListeners();
   }
@@ -121,6 +152,56 @@ class AppController extends ChangeNotifier {
   void setPassword(String value) => password = value;
   void setManualSeed(String value) => manualSeed = value;
 
+  Future<void> setCompressionEnabled(bool value) async {
+    if (isProcessing) return;
+    await _settings.setCompressionEnabled(value);
+    notifyListeners();
+  }
+
+  Future<void> setCompressionFormat(CompressionArchiveFormat value) async {
+    if (isProcessing) return;
+    await _settings.setCompressionFormat(value);
+    notifyListeners();
+  }
+
+  Future<void> setCompressionGrouping(CompressionGrouping value) async {
+    if (isProcessing) return;
+    await _settings.setCompressionGrouping(value);
+    notifyListeners();
+  }
+
+  Future<void> setArchivePasswordProfile(String? id) async {
+    if (isProcessing) return;
+    await _settings.setSelectedArchivePasswordProfile(id);
+    notifyListeners();
+  }
+
+  Future<PasswordProfile> addArchivePasswordProfile({
+    required String name,
+    required String password,
+  }) async {
+    final profile = await _passwordVault!.add(name: name, password: password);
+    await setArchivePasswordProfile(profile.id);
+    return profile;
+  }
+
+  Future<void> updateArchivePasswordProfile(
+    String id, {
+    required String name,
+    required String password,
+  }) async {
+    await _passwordVault!.update(id, name: name, password: password);
+    notifyListeners();
+  }
+
+  Future<void> deleteArchivePasswordProfile(String id) async {
+    await _passwordVault!.delete(id);
+    if (_settings.selectedArchivePasswordProfileId == id) {
+      await _settings.setSelectedArchivePasswordProfile(null);
+    }
+    notifyListeners();
+  }
+
   Future<void> pickFiles() async {
     await _runImport(() => _fileService.pickFiles(workspaceType));
   }
@@ -133,6 +214,68 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  Future<void> pickArchives() async {
+    if (isProcessing) return;
+    try {
+      final request = await _fileService.pickArchives();
+      if (request != null) _enqueueSharedImport(request);
+    } catch (error) {
+      detailMessage = _errorText(error);
+      detailMessageIsError = true;
+      notifyListeners();
+    }
+  }
+
+  void dismissSharedImport(SharedImportRequest request) {
+    _pendingSharedImports.removeWhere((item) => item.id == request.id);
+    notifyListeners();
+  }
+
+  Future<void> acceptSharedImport(
+    SharedImportRequest request, {
+    required ProcessMode selectedMode,
+    Map<String, String> archivePasswords = const {},
+  }) async {
+    if (isProcessing) return;
+    final imported = await _fileService.importShared(
+      request,
+      archivePasswords: archivePasswords,
+    );
+    if (imported.tasks.isEmpty) {
+      await _fileService.cleanupTemporaryRoots(imported.temporaryRoots);
+      throw SharedImportException(
+        imported.skippedCount > 0 ? '没有可处理的图片或 TXT' : '导入内容为空',
+      );
+    }
+    mode = selectedMode;
+    algorithm = selectedMode == ProcessMode.restore
+        ? ScrambleAlgorithm.auto
+        : ScrambleAlgorithm.composite;
+    passwordEnabled = false;
+    password = '';
+    manualSeed = '';
+    batch = _mergeBatches(batch, imported);
+    workspaceType = batch!.containsImages
+        ? WorkspaceType.image
+        : WorkspaceType.text;
+    _resetTaskStates();
+    progress = 0;
+    statusKey = 'ready';
+    detailMessage = imported.skippedCount > 0
+        ? '已导入 ${imported.tasks.length} 个文件，跳过 ${imported.skippedCount} 个其他文件'
+        : '已通过分享导入 ${imported.tasks.length} 个文件';
+    detailMessageIsError = false;
+    _pendingSharedImports.removeWhere((item) => item.id == request.id);
+    _persistProcessingDefaults();
+    notifyListeners();
+  }
+
+  void _enqueueSharedImport(SharedImportRequest request) {
+    if (_pendingSharedImports.any((item) => item.id == request.id)) return;
+    _pendingSharedImports.add(request);
+    notifyListeners();
+  }
+
   Future<void> importDropped(List<XFile> files) async {
     await _runImport(
       () => _fileService.importDropped(files, workspaceType: workspaceType),
@@ -142,21 +285,11 @@ class AppController extends ChangeNotifier {
   Future<void> _runImport(Future<ImportBatch?> Function() action) async {
     if (isProcessing) return;
     detailMessage = null;
+    detailMessageIsError = false;
     try {
       final imported = await action();
       if (imported == null) return;
-      if (batch == null || batch!.workspaceType != imported.workspaceType) {
-        batch = imported;
-      } else {
-        batch = ImportBatch(
-          tasks: [...batch!.tasks, ...imported.tasks],
-          isFolder: batch!.isFolder || imported.isFolder,
-          rootName: batch!.rootName.isNotEmpty
-              ? batch!.rootName
-              : imported.rootName,
-          workspaceType: imported.workspaceType,
-        );
-      }
+      batch = _mergeBatches(batch, imported);
       progress = 0;
       statusKey = batch!.tasks.isEmpty
           ? (workspaceType == WorkspaceType.text
@@ -165,16 +298,20 @@ class AppController extends ChangeNotifier {
           : 'ready';
     } catch (error) {
       detailMessage = _errorText(error);
+      detailMessageIsError = true;
     }
     notifyListeners();
   }
 
   void clear() {
     if (isProcessing) return;
+    final temporaryRoots = batch?.temporaryRoots ?? const <String>[];
     batch = null;
     progress = 0;
     statusKey = 'ready';
     detailMessage = null;
+    detailMessageIsError = false;
+    unawaited(_fileService.cleanupTemporaryRoots(temporaryRoots));
     notifyListeners();
   }
 
@@ -190,10 +327,13 @@ class AppController extends ChangeNotifier {
       isFolder: batch!.isFolder,
       rootName: batch!.rootName,
       workspaceType: batch!.workspaceType,
+      temporaryRoots: batch!.temporaryRoots,
+      skippedCount: batch!.skippedCount,
     );
     progress = 0;
     statusKey = 'ready';
     detailMessage = null;
+    detailMessageIsError = false;
     notifyListeners();
   }
 
@@ -240,7 +380,7 @@ class AppController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (workspaceType == WorkspaceType.image &&
+    if (batch!.containsImages &&
         mode == ProcessMode.scramble &&
         passwordEnabled &&
         password.trim().isEmpty) {
@@ -251,12 +391,17 @@ class AppController extends ChangeNotifier {
     final parsedSeed = manualSeed.trim().isEmpty
         ? null
         : int.tryParse(manualSeed.trim());
-    if (workspaceType == WorkspaceType.image &&
+    if (batch!.containsImages &&
         mode == ProcessMode.restore &&
         algorithm.needsSeed &&
         parsedSeed == null) {
       statusKey = 'invalidSeed';
       notifyListeners();
+      return;
+    }
+
+    if (compressionEnabled && canUseCompression) {
+      await _processCompressed(parsedSeed);
       return;
     }
 
@@ -274,6 +419,7 @@ class AppController extends ChangeNotifier {
     isProcessing = true;
     stopRequested = false;
     detailMessage = null;
+    detailMessageIsError = false;
     statusKey = 'processing';
     _resetTaskStates();
     notifyListeners();
@@ -292,7 +438,7 @@ class AppController extends ChangeNotifier {
         try {
           final input = await _fileService.readTask(task);
           late final Uint8List outputBytes;
-          if (workspaceType == WorkspaceType.image) {
+          if (task.workspaceType == WorkspaceType.image) {
             final result = await _processOne(input, task, parsedSeed);
             task.detectedAlgorithmId = result.algorithm.id;
             outputBytes = Uint8List.fromList(result.bytes);
@@ -307,7 +453,7 @@ class AppController extends ChangeNotifier {
             task: task,
             mode: mode,
             target: target,
-            workspaceType: workspaceType,
+            workspaceType: task.workspaceType,
           );
           outputs.add(saved);
           task.outputLocation = saved.location;
@@ -334,7 +480,7 @@ class AppController extends ChangeNotifier {
         ExportHistoryEntry(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
           createdAt: DateTime.now(),
-          workspaceType: workspaceType,
+          workspaceType: batch!.workspaceType,
           mode: mode,
           targetLabel: target.displayLabel.isNotEmpty
               ? target.displayLabel
@@ -360,6 +506,156 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _processCompressed(int? parsedSeed) async {
+    isProcessing = true;
+    stopRequested = false;
+    detailMessage = null;
+    detailMessageIsError = false;
+    statusKey = 'processing';
+    _resetTaskStates();
+    notifyListeners();
+
+    final stagedPaths = <String, String>{};
+    final prepared = <PreparedArchive>[];
+    final outputs = <SaveOutputResult>[];
+    ExportTarget? target;
+    var historyRecorded = false;
+    var nextIndex = 0;
+    var finishedCount = 0;
+    try {
+      Future<void> worker() async {
+        while (true) {
+          if (stopRequested || nextIndex >= tasks.length) return;
+          final task = tasks[nextIndex++];
+          task.status = TaskStatus.processing;
+          notifyListeners();
+          try {
+            final input = await _fileService.readTask(task);
+            final result = await _processOne(input, task, parsedSeed);
+            task.detectedAlgorithmId = result.algorithm.id;
+            stagedPaths[task.id] = await _fileService.stageOutputBytes(
+              Uint8List.fromList(result.bytes),
+            );
+            task.status = TaskStatus.completed;
+          } catch (error) {
+            task.status = TaskStatus.failed;
+            task.error = _errorText(error);
+          }
+          finishedCount++;
+          progress = (finishedCount / tasks.length) * 0.82;
+          notifyListeners();
+        }
+      }
+
+      final workerCount = effectiveProcessingConcurrency.clamp(1, tasks.length);
+      await Future.wait(List.generate(workerCount, (_) => worker()));
+      if (stopRequested || stagedPaths.isEmpty) {
+        statusKey = 'partialCompleted';
+        return;
+      }
+
+      statusKey = 'creatingArchives';
+      progress = 0.86;
+      notifyListeners();
+      final groups = _archiveService.plan(
+        tasks: tasks,
+        stagedPaths: stagedPaths,
+        grouping: compressionGrouping,
+      );
+      prepared.addAll(
+        await _archiveService.create(
+          groups: groups,
+          format: compressionFormat,
+          password: selectedArchivePasswordProfile?.password,
+        ),
+      );
+      progress = 0.92;
+      target = await _fileService.chooseArchiveExportTarget(
+        fileNames: prepared.map((item) => item.fileName).toList(),
+        settings: _settings,
+      );
+      if (target == null) {
+        statusKey = 'exportCancelled';
+        return;
+      }
+      for (final archive in prepared) {
+        outputs.add(
+          await _fileService.savePreparedArchive(
+            sourcePath: archive.path,
+            fileName: archive.fileName,
+            target: target,
+          ),
+        );
+      }
+      progress = 1;
+      await _recordHistory(outputs, target);
+      historyRecorded = true;
+      for (final task in tasks.where(
+        (item) => item.status == TaskStatus.completed,
+      )) {
+        task.outputLocation = target.displayLabel;
+      }
+      statusKey = failedCount == 0 ? 'allCompleted' : 'partialCompleted';
+    } catch (error) {
+      final cancelled = error is ExportCancelledException;
+      detailMessage = cancelled ? null : _errorText(error);
+      detailMessageIsError = !cancelled;
+      statusKey = cancelled ? 'exportCancelled' : 'partialCompleted';
+      if (!historyRecorded && outputs.isNotEmpty && target != null) {
+        try {
+          await _recordHistory(outputs, target);
+        } catch (_) {}
+      }
+      if (!cancelled) {
+        for (final task in tasks.where(
+          (item) => item.status == TaskStatus.completed,
+        )) {
+          task.status = TaskStatus.failed;
+          task.error = detailMessage;
+        }
+      }
+    } finally {
+      await _fileService.cleanupStagedFiles(stagedPaths.values);
+      await _archiveService.cleanup(prepared);
+      isProcessing = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _recordHistory(
+    List<SaveOutputResult> outputs,
+    ExportTarget target,
+  ) async {
+    if (outputs.isEmpty) return;
+    final createdDirectories = <String>{
+      ...target.createdDirectories,
+      for (final output in outputs) ...output.createdDirectories,
+    }.toList(growable: false);
+    await _historyStore.add(
+      ExportHistoryEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        createdAt: DateTime.now(),
+        workspaceType: batch!.workspaceType,
+        mode: mode,
+        targetLabel: target.displayLabel.isNotEmpty
+            ? target.displayLabel
+            : outputs.first.displayName,
+        artifacts: outputs
+            .map(
+              (output) => ExportArtifact(
+                location: output.location,
+                displayName: output.displayName,
+                sha256: output.sha256Digest,
+                sizeBytes: output.sizeBytes,
+              ),
+            )
+            .toList(growable: false),
+        createdDirectories: createdDirectories,
+      ),
+    );
+    await _historyStore.cleanup(_settings.historyRetentionDays);
+  }
+
   Future<ProcessedImage> _processOne(
     Uint8List bytes,
     ImageTask task,
@@ -378,6 +674,32 @@ class AppController extends ChangeNotifier {
       requestedAlgorithm: algorithm,
       password: password.trim().isEmpty ? null : password,
       manualSeed: parsedSeed,
+    );
+  }
+
+  ImportBatch _mergeBatches(ImportBatch? current, ImportBatch imported) {
+    if (current == null) return imported;
+    final tasks = [...current.tasks, ...imported.tasks];
+    final containsImages = tasks.any(
+      (task) => task.workspaceType == WorkspaceType.image,
+    );
+    final containsText = tasks.any(
+      (task) => task.workspaceType == WorkspaceType.text,
+    );
+    final combinedWorkspace = containsImages && containsText
+        ? WorkspaceType.mixed
+        : containsText
+        ? WorkspaceType.text
+        : WorkspaceType.image;
+    return ImportBatch(
+      tasks: tasks,
+      isFolder: current.isFolder || imported.isFolder,
+      rootName: current.rootName.isNotEmpty
+          ? current.rootName
+          : imported.rootName,
+      workspaceType: combinedWorkspace,
+      temporaryRoots: [...current.temporaryRoots, ...imported.temporaryRoots],
+      skippedCount: current.skippedCount + imported.skippedCount,
     );
   }
 
@@ -432,6 +754,7 @@ class AppController extends ChangeNotifier {
     if (error is ImageProcessingException) return error.message;
     if (error is FileServiceException) return error.message;
     if (error is TextProcessingException) return error.message;
+    if (error is ArchiveCreationException) return error.message;
     return error.toString().replaceFirst('Exception: ', '');
   }
 }

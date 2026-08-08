@@ -22,6 +22,239 @@ class FileService {
     'tiff',
   ];
   Future<void> _saveTail = Future<void>.value();
+  bool _drainingSharedIntents = false;
+  void Function(SharedImportRequest request)? _sharedImportListener;
+
+  Future<void> initializeSharedImports(
+    void Function(SharedImportRequest request) listener,
+  ) async {
+    if (!Platform.isAndroid) return;
+    _sharedImportListener = listener;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'sharedIntentAvailable') await _drainSharedIntents();
+    });
+    await _drainSharedIntents();
+  }
+
+  Future<void> _drainSharedIntents() async {
+    if (_drainingSharedIntents) return;
+    _drainingSharedIntents = true;
+    try {
+      while (true) {
+        final raw = await _channel.invokeMapMethod<String, dynamic>(
+          'takePendingShare',
+        );
+        if (raw == null) break;
+        final request = SharedImportRequest.fromMap(raw);
+        if (request.items.isNotEmpty) _sharedImportListener?.call(request);
+      }
+    } finally {
+      _drainingSharedIntents = false;
+    }
+  }
+
+  Future<SharedImportRequest?> pickArchives() async {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: const ['zip', '7z', 'rar'],
+      dialogTitle: '选择 ZIP、7Z 或 RAR 压缩包',
+      withData: false,
+      withReadStream: false,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final items = result.files
+        .where((file) => file.path != null)
+        .map(
+          (file) => SharedImportItem(
+            name: file.name,
+            sourcePath: file.path,
+            sizeBytes: file.size,
+            mimeType: _archiveMimeType(file.name),
+          ),
+        )
+        .toList(growable: false);
+    if (items.isEmpty) return null;
+    return SharedImportRequest(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      items: items,
+    );
+  }
+
+  Future<ImportBatch> importShared(
+    SharedImportRequest request, {
+    Map<String, String> archivePasswords = const {},
+  }) async {
+    final tasks = <ImageTask>[];
+    final temporaryRoots = <String>[];
+    var skippedCount = 0;
+    var containsFolder = false;
+    var firstRootName = '';
+    var taskIndex = 0;
+
+    try {
+      for (final item in request.items) {
+        if (item.isDirectory) {
+          final uri = item.uri;
+          if (uri == null) {
+            skippedCount++;
+            continue;
+          }
+          final listed = await _channel.invokeMapMethod<String, dynamic>(
+            'listSharedDirectory',
+            {'uri': uri},
+          );
+          if (listed == null) {
+            throw SharedImportException('分享的文件夹无法读取');
+          }
+          final rootName = listed['name'] as String? ?? item.name;
+          firstRootName = firstRootName.isEmpty ? rootName : firstRootName;
+          containsFolder = true;
+          for (final raw in listed['items'] as List<dynamic>? ?? const []) {
+            final entry = Map<String, dynamic>.from(raw as Map);
+            final name = entry['name'] as String? ?? '';
+            final kind = _workspaceForName(name);
+            if (kind == null) {
+              skippedCount++;
+              continue;
+            }
+            tasks.add(
+              ImageTask(
+                id: '${request.id}-${taskIndex++}',
+                originalName: name,
+                relativeDirectory: entry['relativeDirectory'] as String? ?? '',
+                sourceRootName: rootName,
+                sourceRootId: uri,
+                sourceUri: entry['uri'] as String?,
+                sizeBytes: (entry['size'] as num?)?.toInt() ?? 0,
+                workspaceType: kind,
+              ),
+            );
+          }
+          continue;
+        }
+
+        if (item.isArchive) {
+          final sourceKey = _sharedSourceKey(item);
+          final arguments = <String, dynamic>{
+            'name': item.name,
+            'password': archivePasswords[sourceKey] ?? '',
+            if (item.uri != null) 'uri': item.uri,
+            if (item.sourcePath != null) 'sourcePath': item.sourcePath,
+          };
+          late final Map<String, dynamic>? extracted;
+          try {
+            extracted = await _channel.invokeMapMethod<String, dynamic>(
+              'extractArchive',
+              arguments,
+            );
+          } on PlatformException catch (error) {
+            throw SharedImportException(
+              error.message ?? '压缩包解压失败',
+              code: error.code,
+              sourceName: item.name,
+            );
+          }
+          if (extracted == null) {
+            throw SharedImportException('压缩包解压失败', sourceName: item.name);
+          }
+          final rootName =
+              extracted['rootName'] as String? ??
+              basenameWithoutExtension(item.name);
+          firstRootName = firstRootName.isEmpty ? rootName : firstRootName;
+          containsFolder = true;
+          final temporaryRoot = extracted['temporaryRoot'] as String?;
+          if (temporaryRoot != null) temporaryRoots.add(temporaryRoot);
+          skippedCount += (extracted['skippedCount'] as num?)?.toInt() ?? 0;
+          for (final raw in extracted['items'] as List<dynamic>? ?? const []) {
+            final entry = Map<String, dynamic>.from(raw as Map);
+            final name = entry['name'] as String? ?? '';
+            final kind = entry['kind'] == 'text'
+                ? WorkspaceType.text
+                : WorkspaceType.image;
+            tasks.add(
+              ImageTask(
+                id: '${request.id}-${taskIndex++}',
+                originalName: name,
+                relativeDirectory: entry['relativeDirectory'] as String? ?? '',
+                sourceRootName: rootName,
+                sourceRootId: sourceKey,
+                inputPath: entry['path'] as String?,
+                sizeBytes: (entry['size'] as num?)?.toInt() ?? 0,
+                workspaceType: kind,
+              ),
+            );
+          }
+          continue;
+        }
+
+        final kind = _workspaceForName(item.name);
+        if (kind == null) {
+          skippedCount++;
+          continue;
+        }
+        tasks.add(
+          ImageTask(
+            id: '${request.id}-${taskIndex++}',
+            originalName: item.name,
+            relativeDirectory: '',
+            sourceRootName: '',
+            inputPath: item.sourcePath,
+            sourceUri: item.uri,
+            sizeBytes: item.sizeBytes,
+            workspaceType: kind,
+          ),
+        );
+      }
+    } catch (_) {
+      await cleanupTemporaryRoots(temporaryRoots);
+      rethrow;
+    }
+
+    tasks.sort((left, right) {
+      final a = path.join(
+        left.sourceRootName,
+        left.relativeDirectory,
+        left.originalName,
+      );
+      final b = path.join(
+        right.sourceRootName,
+        right.relativeDirectory,
+        right.originalName,
+      );
+      return a.toLowerCase().compareTo(b.toLowerCase());
+    });
+    final containsImages = tasks.any(
+      (task) => task.workspaceType == WorkspaceType.image,
+    );
+    final containsText = tasks.any(
+      (task) => task.workspaceType == WorkspaceType.text,
+    );
+    final batchWorkspace = containsImages && containsText
+        ? WorkspaceType.mixed
+        : containsText
+        ? WorkspaceType.text
+        : WorkspaceType.image;
+    return ImportBatch(
+      tasks: tasks,
+      isFolder: containsFolder,
+      rootName: firstRootName,
+      workspaceType: batchWorkspace,
+      temporaryRoots: temporaryRoots,
+      skippedCount: skippedCount,
+    );
+  }
+
+  Future<void> cleanupTemporaryRoots(Iterable<String> roots) async {
+    for (final root in roots.toSet()) {
+      try {
+        final directory = Directory(root);
+        if (await directory.exists()) await directory.delete(recursive: true);
+      } catch (_) {
+        // The Android cache directory may already have been reclaimed.
+      }
+    }
+  }
 
   Future<ImportBatch?> pickFiles(WorkspaceType workspaceType) async {
     final textMode = workspaceType == WorkspaceType.text;
@@ -47,6 +280,7 @@ class FileService {
           sourceRootName: '',
           inputPath: file.path,
           sizeBytes: file.size,
+          workspaceType: workspaceType,
         ),
       );
     }
@@ -105,6 +339,7 @@ class FileService {
           sourceRootId: directory.absolute.path,
           inputPath: entity.path,
           sizeBytes: await entity.length(),
+          workspaceType: workspaceType,
         ),
       );
     }
@@ -154,6 +389,7 @@ class FileService {
           sourceRootName: '',
           inputPath: item.path,
           sizeBytes: await file.length(),
+          workspaceType: workspaceType,
         ),
       );
     }
@@ -184,6 +420,210 @@ class FileService {
     throw const FileServiceException('图片来源不可读取');
   }
 
+  Future<String> stageOutputBytes(
+    Uint8List bytes, {
+    String suffix = '.png',
+  }) async {
+    final directory = await Directory.systemTemp.createTemp('langbai-stage-');
+    final file = File(path.join(directory.path, 'output$suffix'));
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
+  Future<void> cleanupStagedFiles(Iterable<String> paths) async {
+    final parents = <String>{};
+    for (final item in paths) {
+      final file = File(item);
+      parents.add(file.parent.path);
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+    }
+    for (final parent in parents) {
+      try {
+        final directory = Directory(parent);
+        if (await directory.exists() && (await directory.list().isEmpty)) {
+          await directory.delete();
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<ExportTarget?> chooseArchiveExportTarget({
+    required List<String> fileNames,
+    required AppSettings settings,
+  }) async {
+    if (fileNames.isEmpty) return null;
+    final single = fileNames.length == 1;
+    final suggestedName = fileNames.first;
+    if (Platform.isAndroid) {
+      if (single && settings.askExportEveryTime) {
+        return ExportTarget(
+          rootFolderName: '',
+          singleFile: true,
+          displayLabel: suggestedName,
+        );
+      }
+      var treeUri = settings.askExportEveryTime
+          ? null
+          : settings.defaultExportTreeUri;
+      if (treeUri == null) {
+        final tree = await _pickTree();
+        if (tree == null) return null;
+        treeUri = tree.uri;
+        if (!settings.askExportEveryTime) {
+          await settings.setDefaultExport(treeUri: tree.uri, label: tree.name);
+        }
+      }
+      if (single) {
+        return ExportTarget(
+          treeUri: treeUri,
+          rootFolderName: '',
+          singleFile: true,
+          displayLabel: suggestedName,
+        );
+      }
+      final reserved = await _channel.invokeMapMethod<String, dynamic>(
+        'createUniqueDirectory',
+        {'treeUri': treeUri, 'desiredName': _archiveBatchFolderName()},
+      );
+      if (reserved == null) {
+        throw const FileServiceException('建立压缩包导出文件夹失败');
+      }
+      final actualName =
+          reserved['name'] as String? ?? _archiveBatchFolderName();
+      final uri = reserved['uri'] as String?;
+      return ExportTarget(
+        treeUri: treeUri,
+        rootFolderName: actualName,
+        singleFile: false,
+        displayLabel: '$actualName/',
+        createdDirectories: uri == null ? const [] : [uri],
+      );
+    }
+
+    if (single) {
+      if (!settings.askExportEveryTime && settings.defaultExportPath != null) {
+        final uniquePath = await _uniqueFilePath(
+          path.join(settings.defaultExportPath!, suggestedName),
+        );
+        return ExportTarget(
+          path: uniquePath,
+          rootFolderName: '',
+          singleFile: true,
+          displayLabel: uniquePath,
+        );
+      }
+      final extension = path.extension(suggestedName).replaceFirst('.', '');
+      var selected = await FilePicker.platform.saveFile(
+        dialogTitle: '导出压缩包',
+        fileName: suggestedName,
+        type: FileType.custom,
+        allowedExtensions: [extension],
+      );
+      if (selected == null) return null;
+      if (!selected.toLowerCase().endsWith('.$extension')) {
+        selected += '.$extension';
+      }
+      final uniquePath = await _uniqueFilePath(selected);
+      return ExportTarget(
+        path: uniquePath,
+        rootFolderName: '',
+        singleFile: true,
+        displayLabel: uniquePath,
+      );
+    }
+
+    var selectedDirectory = settings.askExportEveryTime
+        ? null
+        : settings.defaultExportPath;
+    selectedDirectory ??= await FilePicker.platform.getDirectoryPath(
+      dialogTitle: '选择压缩包导出位置',
+    );
+    if (selectedDirectory == null) return null;
+    final directory = await _createUniqueDirectory(
+      path.join(selectedDirectory, _archiveBatchFolderName()),
+    );
+    return ExportTarget(
+      path: directory.path,
+      rootFolderName: '',
+      singleFile: false,
+      displayLabel: directory.path,
+      createdDirectories: [directory.path],
+    );
+  }
+
+  Future<SaveOutputResult> savePreparedArchive({
+    required String sourcePath,
+    required String fileName,
+    required ExportTarget target,
+  }) => _enqueueSave(
+    () => _savePreparedArchiveUnlocked(
+      sourcePath: sourcePath,
+      fileName: fileName,
+      target: target,
+    ),
+  );
+
+  Future<SaveOutputResult> _savePreparedArchiveUnlocked({
+    required String sourcePath,
+    required String fileName,
+    required ExportTarget target,
+  }) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw const FileServiceException('待导出的压缩包不存在');
+    }
+    final mimeType = fileName.toLowerCase().endsWith('.zip')
+        ? 'application/zip'
+        : 'application/x-7z-compressed';
+    late final String location;
+    late final String displayName;
+    var createdDirectories = const <String>[];
+    if (!Platform.isAndroid) {
+      final desired = target.singleFile
+          ? target.path!
+          : path.join(target.path!, fileName);
+      final outputPath = await _uniqueFilePath(desired);
+      final output = await source.copy(outputPath);
+      location = output.path;
+      displayName = path.basename(output.path);
+    } else if (target.singleFile && target.treeUri == null) {
+      final saved = await _channel.invokeMethod<dynamic>('saveDocument', {
+        'sourcePath': sourcePath,
+        'suggestedName': fileName,
+        'mimeType': mimeType,
+      });
+      if (saved == null) throw const ExportCancelledException();
+      final map = Map<String, dynamic>.from(saved as Map);
+      location = map['uri'] as String;
+      displayName = map['name'] as String? ?? fileName;
+    } else {
+      final saved = await _channel
+          .invokeMapMethod<String, dynamic>('writeFileToTree', {
+            'treeUri': target.treeUri,
+            'relativeFolder': target.singleFile ? '' : target.rootFolderName,
+            'fileName': fileName,
+            'sourcePath': sourcePath,
+            'mimeType': mimeType,
+          });
+      if (saved == null) throw const FileServiceException('写入压缩包失败');
+      location = saved['uri'] as String;
+      displayName = saved['name'] as String? ?? fileName;
+      createdDirectories =
+          (saved['createdDirectories'] as List<dynamic>? ?? const [])
+              .cast<String>();
+    }
+    final digest = await sha256.bind(source.openRead()).first;
+    return SaveOutputResult(
+      location: location,
+      displayName: displayName,
+      sha256Digest: digest.toString(),
+      sizeBytes: await source.length(),
+      createdDirectories: createdDirectories,
+    );
+  }
+
   Future<ExportTarget?> chooseExportTarget({
     required ImportBatch batch,
     required ProcessMode mode,
@@ -197,7 +637,7 @@ class FileService {
     final suggestedName = outputFileName(
       batch.tasks.first,
       mode,
-      workspaceType: batch.workspaceType,
+      workspaceType: batch.tasks.first.workspaceType,
     );
     if (Platform.isAndroid) {
       if (single && settings.askExportEveryTime) {
@@ -611,10 +1051,19 @@ class FileService {
     final stamp =
         '${now.year}${two(now.month)}${two(now.day)}_'
         '${two(now.hour)}${two(now.minute)}${two(now.second)}';
-    final action = workspaceType == WorkspaceType.text
-        ? (mode == ProcessMode.scramble ? 'TXT转码' : 'TXT恢复')
-        : (mode == ProcessMode.scramble ? '混淆' : '还原');
+    final action = switch (workspaceType) {
+      WorkspaceType.text => mode == ProcessMode.scramble ? 'TXT转码' : 'TXT恢复',
+      WorkspaceType.mixed => mode == ProcessMode.scramble ? '混合混淆' : '混合还原',
+      WorkspaceType.image => mode == ProcessMode.scramble ? '混淆' : '还原',
+    };
     return 'Langbai_${action}_$stamp';
+  }
+
+  String _archiveBatchFolderName() {
+    final now = DateTime.now();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return 'Langbai_混淆压缩_${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}${two(now.second)}';
   }
 
   Future<ImportBatch?> _pickAndroidFolder(WorkspaceType workspaceType) async {
@@ -639,6 +1088,7 @@ class FileService {
           sourceRootId: tree.uri,
           sourceUri: item['uri'] as String?,
           sizeBytes: (item['size'] as num?)?.toInt() ?? 0,
+          workspaceType: workspaceType,
         ),
       );
     }
@@ -655,6 +1105,23 @@ class FileService {
         ? isSupportedTextName(name)
         : isSupportedImageName(name);
   }
+
+  WorkspaceType? _workspaceForName(String name) {
+    if (isSupportedImageName(name)) return WorkspaceType.image;
+    if (isSupportedTextName(name)) return WorkspaceType.text;
+    return null;
+  }
+
+  String _sharedSourceKey(SharedImportItem item) =>
+      item.uri ?? item.sourcePath ?? item.name;
+
+  String _archiveMimeType(String name) =>
+      switch (name.toLowerCase().split('.').last) {
+        'zip' => 'application/zip',
+        '7z' => 'application/x-7z-compressed',
+        'rar' => 'application/vnd.rar',
+        _ => 'application/octet-stream',
+      };
 
   List<_OutputGroup> _outputGroups(ImportBatch batch, String fallbackName) {
     final grouped = <String, List<ImageTask>>{};
@@ -727,6 +1194,19 @@ class FileServiceException implements Exception {
 
   @override
   String toString() => message;
+}
+
+class SharedImportException extends FileServiceException {
+  const SharedImportException(
+    super.message, {
+    this.code = 'shared_import_failed',
+    this.sourceName,
+  });
+
+  final String code;
+  final String? sourceName;
+
+  bool get isPasswordError => code == 'archive_password';
 }
 
 class ExportCancelledException extends FileServiceException {

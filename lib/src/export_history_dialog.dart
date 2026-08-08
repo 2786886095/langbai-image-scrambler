@@ -290,7 +290,9 @@ class _HistoryCard extends StatelessWidget {
     );
   }
 
-  IconData get _icon => entry.workspaceType == WorkspaceType.text
+  IconData get _icon => entry.workspaceType == WorkspaceType.mixed
+      ? Icons.folder_zip_outlined
+      : entry.workspaceType == WorkspaceType.text
       ? Icons.description_outlined
       : entry.mode == ProcessMode.restore
       ? Icons.auto_fix_high_outlined
@@ -303,6 +305,10 @@ class _HistoryCard extends StatelessWidget {
       strings['historyImageRestore'],
     (WorkspaceType.text, ProcessMode.scramble) => strings['historyTextEncode'],
     (WorkspaceType.text, ProcessMode.restore) => strings['historyTextRestore'],
+    (WorkspaceType.mixed, ProcessMode.scramble) =>
+      strings['historyMixedScramble'],
+    (WorkspaceType.mixed, ProcessMode.restore) =>
+      strings['historyMixedRestore'],
   };
 
   String _formatTime(DateTime time) {

@@ -66,3 +66,11 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    implementation("net.lingala.zip4j:zip4j:2.11.6")
+    implementation("org.apache.commons:commons-compress:1.28.0")
+    implementation("org.tukaani:xz:1.10")
+    implementation("com.github.junrar:junrar:8.0.0")
+    testImplementation("junit:junit:4.13.2")
+}

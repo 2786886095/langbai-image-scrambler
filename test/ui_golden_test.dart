@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +8,8 @@ import 'package:langbai_image_scrambler/src/app_controller.dart';
 import 'package:langbai_image_scrambler/src/app_settings.dart';
 import 'package:langbai_image_scrambler/src/export_history.dart';
 import 'package:langbai_image_scrambler/src/models.dart';
+import 'package:langbai_image_scrambler/src/password_vault.dart';
+import 'package:langbai_image_scrambler/src/shared_import_dialog.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -39,6 +43,9 @@ void main() {
     bool openHistory = false,
     bool populatedHistory = false,
     bool multiFolderQueue = false,
+    bool openSharedImport = false,
+    bool compressionEnabled = false,
+    bool openPasswordVault = false,
     String theme = 'dark',
     String language = 'simplified',
     double textScaleFactor = 1,
@@ -47,8 +54,16 @@ void main() {
       'check_updates': false,
       'theme': theme,
       'language': language,
+      'compression_enabled': compressionEnabled,
     });
     final settings = await AppSettings.load();
+    final passwordVault = await PasswordVault.load(
+      storage: MemoryPasswordStorage(),
+    );
+    if (compressionEnabled || openPasswordVault) {
+      await passwordVault.add(name: '常用密码', password: 'golden-one');
+      await passwordVault.add(name: '投稿压缩包', password: 'golden-two');
+    }
     final history = ExportHistoryStore.memory();
     if (populatedHistory) {
       await history.add(
@@ -76,7 +91,11 @@ void main() {
         ),
       );
     }
-    final controller = AppController(settings, historyStore: history);
+    final controller = AppController(
+      settings,
+      historyStore: history,
+      passwordVault: passwordVault,
+    );
     if (textWorkspace) controller.setWorkspaceType(WorkspaceType.text);
     if (restoreMode) controller.setMode(ProcessMode.restore);
     if (passwordEnabled) controller.setPasswordEnabled(true);
@@ -104,6 +123,7 @@ void main() {
         providers: [
           ChangeNotifierProvider.value(value: settings),
           ChangeNotifierProvider.value(value: controller),
+          ChangeNotifierProvider.value(value: passwordVault),
         ],
         child: RepaintBoundary(
           child: LangbaiApp(
@@ -117,11 +137,46 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.getSize(find.byType(Scaffold)), size);
     expect(MediaQuery.sizeOf(tester.element(find.byType(Scaffold))), size);
+    if (openSharedImport) {
+      final request = SharedImportRequest(
+        id: 'golden-share',
+        items: const [
+          SharedImportItem(
+            name: '小说图片合集.zip',
+            uri: 'content://golden/archive-1',
+            sizeBytes: 1024 * 1024 * 18,
+          ),
+          SharedImportItem(
+            name: '插图补充.rar',
+            uri: 'content://golden/archive-2',
+            sizeBytes: 1024 * 1024 * 6,
+          ),
+          SharedImportItem(
+            name: '番外章节',
+            uri: 'content://golden/folder',
+            isDirectory: true,
+          ),
+        ],
+      );
+      unawaited(
+        showSharedImportDialog(tester.element(find.byType(Scaffold)), request),
+      );
+      await tester.pumpAndSettle();
+    }
     if (openAlgorithmPicker) {
       final field = find.byKey(const ValueKey('algorithm-picker-field'));
       await tester.ensureVisible(field);
       await tester.pumpAndSettle();
       await tester.tap(field);
+      await tester.pumpAndSettle();
+    }
+    if (compressionEnabled) {
+      final compression = find.text('压缩输出');
+      await tester.ensureVisible(compression);
+      await tester.pumpAndSettle();
+    }
+    if (openPasswordVault) {
+      await tester.tap(find.text('管理密码'));
       await tester.pumpAndSettle();
     }
     if (openSettings) {
@@ -384,6 +439,73 @@ void main() {
       const Size(390, 844),
       'goldens/multi_folder_queue_android.png',
       multiFolderQueue: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android shared archive import',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/shared_import_android.png',
+      openSharedImport: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'small Android shared archive import',
+    (tester) => render(
+      tester,
+      const Size(360, 640),
+      'goldens/shared_import_android_360x640.png',
+      openSharedImport: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android compression output settings',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/compression_android.png',
+      compressionEnabled: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'small Android compression output settings',
+    (tester) => render(
+      tester,
+      const Size(360, 640),
+      'goldens/compression_android_360x640.png',
+      compressionEnabled: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'desktop compression output settings',
+    (tester) => render(
+      tester,
+      const Size(1440, 900),
+      'goldens/compression_desktop.png',
+      compressionEnabled: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android password vault',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/password_vault_android.png',
+      compressionEnabled: true,
+      openPasswordVault: true,
     ),
     skip: !_runGoldens,
   );

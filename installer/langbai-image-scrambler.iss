@@ -1,19 +1,36 @@
-#define MyAppName "Langbai 图片混淆"
-#define MyAppVersion "1.1.0"
-#define MyAppPublisher "Langbai"
-#define MyAppExeName "langbai_image_scrambler.exe"
+#ifndef MyAppName
+  #define MyAppName "Langbai 图片混淆"
+#endif
+#ifndef MyAppVersion
+  #define MyAppVersion "1.2.0"
+#endif
+#ifndef MyAppPublisher
+  #define MyAppPublisher "Langbai"
+#endif
+#ifndef MyAppExeName
+  #define MyAppExeName "langbai_image_scrambler.exe"
+#endif
+#ifndef MyAppId
+  #define MyAppId "{{9C0211F3-BD6A-4B64-8FE6-A5884B485CAE}"
+#endif
+#ifndef MyDefaultDirName
+  #define MyDefaultDirName "Langbai Image Scrambler"
+#endif
+#ifndef MyOutputBaseFilename
+  #define MyOutputBaseFilename "Langbai-Image-Scrambler-Setup-v" + MyAppVersion
+#endif
 
 [Setup]
-AppId={{9C0211F3-BD6A-4B64-8FE6-A5884B485CAE}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={localappdata}\Programs\Langbai Image Scrambler
+DefaultDirName={localappdata}\Programs\{#MyDefaultDirName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\release
-OutputBaseFilename=Langbai-Image-Scrambler-Setup-v{#MyAppVersion}
+OutputBaseFilename={#MyOutputBaseFilename}
 SetupIconFile=..\windows\runner\resources\app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/ultra64
@@ -32,7 +49,7 @@ VersionInfoProductVersion={#MyAppVersion}
 Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: checkedonce
 
 [Files]
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

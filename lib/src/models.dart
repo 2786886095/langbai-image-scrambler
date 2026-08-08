@@ -2,7 +2,15 @@ import 'dart:io';
 
 enum ProcessMode { scramble, restore }
 
-enum WorkspaceType { image, text }
+enum WorkspaceType { image, text, mixed }
+
+enum CompressionArchiveFormat { zip, sevenZip }
+
+extension CompressionArchiveFormatX on CompressionArchiveFormat {
+  String get extension => this == CompressionArchiveFormat.zip ? 'zip' : '7z';
+}
+
+enum CompressionGrouping { perFolder, perFile, combined }
 
 enum ScrambleAlgorithm {
   auto,
@@ -50,6 +58,7 @@ class ImageTask {
     this.inputPath,
     this.sourceUri,
     this.sizeBytes = 0,
+    this.workspaceType = WorkspaceType.image,
   });
 
   final String id;
@@ -60,6 +69,7 @@ class ImageTask {
   final String? inputPath;
   final String? sourceUri;
   final int sizeBytes;
+  final WorkspaceType workspaceType;
 
   TaskStatus status = TaskStatus.queued;
   String? outputLocation;
@@ -80,6 +90,7 @@ class ImageTask {
     inputPath: inputPath,
     sourceUri: sourceUri,
     sizeBytes: sizeBytes,
+    workspaceType: workspaceType,
   );
 }
 
@@ -89,12 +100,80 @@ class ImportBatch {
     required this.isFolder,
     required this.rootName,
     this.workspaceType = WorkspaceType.image,
+    this.temporaryRoots = const [],
+    this.skippedCount = 0,
   });
 
   final List<ImageTask> tasks;
   final bool isFolder;
   final String rootName;
   final WorkspaceType workspaceType;
+  final List<String> temporaryRoots;
+  final int skippedCount;
+
+  bool get containsImages =>
+      tasks.any((task) => task.workspaceType == WorkspaceType.image);
+  bool get containsText =>
+      tasks.any((task) => task.workspaceType == WorkspaceType.text);
+  bool get isMixed => containsImages && containsText;
+}
+
+class SharedImportItem {
+  const SharedImportItem({
+    required this.name,
+    this.uri,
+    this.sourcePath,
+    this.mimeType = 'application/octet-stream',
+    this.sizeBytes = 0,
+    this.isDirectory = false,
+  });
+
+  factory SharedImportItem.fromMap(Map<String, dynamic> map) =>
+      SharedImportItem(
+        name: map['name'] as String? ?? '分享文件',
+        uri: map['uri'] as String?,
+        sourcePath: map['sourcePath'] as String?,
+        mimeType: map['mimeType'] as String? ?? 'application/octet-stream',
+        sizeBytes: (map['size'] as num?)?.toInt() ?? 0,
+        isDirectory: map['isDirectory'] as bool? ?? false,
+      );
+
+  final String name;
+  final String? uri;
+  final String? sourcePath;
+  final String mimeType;
+  final int sizeBytes;
+  final bool isDirectory;
+
+  String get extension =>
+      name.contains('.') ? name.split('.').last.toLowerCase() : '';
+  bool get isArchive => const {'zip', '7z', 'rar'}.contains(extension);
+  bool get isImage => isSupportedImageName(name);
+  bool get isText => isSupportedTextName(name);
+}
+
+class SharedImportRequest {
+  const SharedImportRequest({required this.id, required this.items});
+
+  factory SharedImportRequest.fromMap(Map<String, dynamic> map) =>
+      SharedImportRequest(
+        id:
+            map['id'] as String? ??
+            DateTime.now().microsecondsSinceEpoch.toString(),
+        items: (map['items'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map(
+              (item) =>
+                  SharedImportItem.fromMap(Map<String, dynamic>.from(item)),
+            )
+            .toList(growable: false),
+      );
+
+  final String id;
+  final List<SharedImportItem> items;
+
+  List<SharedImportItem> get archives =>
+      items.where((item) => item.isArchive).toList(growable: false);
 }
 
 class ProcessedImage {
@@ -147,6 +226,11 @@ bool isSupportedImageName(String name) {
 }
 
 bool isSupportedTextName(String name) => name.toLowerCase().endsWith('.txt');
+
+bool isSupportedArchiveName(String name) {
+  final extension = name.toLowerCase().split('.').last;
+  return const {'zip', '7z', 'rar'}.contains(extension);
+}
 
 String basenameWithoutExtension(String name) {
   final index = name.lastIndexOf('.');

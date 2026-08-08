@@ -23,6 +23,10 @@ class AppSettings extends ChangeNotifier {
     required this._lastProcessMode,
     required this._lastAlgorithm,
     required this._passwordProtectionEnabled,
+    required this._compressionEnabled,
+    required this._compressionFormat,
+    required this._compressionGrouping,
+    required this._selectedArchivePasswordProfileId,
     this.defaultExportPath,
     this.defaultExportTreeUri,
     this.defaultExportLabel,
@@ -41,6 +45,11 @@ class AppSettings extends ChangeNotifier {
   static const _lastProcessModeKey = 'last_process_mode';
   static const _lastAlgorithmKey = 'last_algorithm';
   static const _passwordProtectionKey = 'password_protection_enabled';
+  static const _compressionEnabledKey = 'compression_enabled';
+  static const _compressionFormatKey = 'compression_format';
+  static const _compressionGroupingKey = 'compression_grouping';
+  static const _selectedArchivePasswordProfileKey =
+      'selected_archive_password_profile';
 
   final SharedPreferences _preferences;
   AppLanguage _language;
@@ -53,6 +62,10 @@ class AppSettings extends ChangeNotifier {
   ProcessMode _lastProcessMode;
   ScrambleAlgorithm _lastAlgorithm;
   bool _passwordProtectionEnabled;
+  bool _compressionEnabled;
+  CompressionArchiveFormat _compressionFormat;
+  CompressionGrouping _compressionGrouping;
+  String? _selectedArchivePasswordProfileId;
   String? defaultExportPath;
   String? defaultExportTreeUri;
   String? defaultExportLabel;
@@ -70,6 +83,11 @@ class AppSettings extends ChangeNotifier {
   ProcessMode get lastProcessMode => _lastProcessMode;
   ScrambleAlgorithm get lastAlgorithm => _lastAlgorithm;
   bool get passwordProtectionEnabled => _passwordProtectionEnabled;
+  bool get compressionEnabled => _compressionEnabled;
+  CompressionArchiveFormat get compressionFormat => _compressionFormat;
+  CompressionGrouping get compressionGrouping => _compressionGrouping;
+  String? get selectedArchivePasswordProfileId =>
+      _selectedArchivePasswordProfileId;
 
   static Future<AppSettings> load() async {
     final preferences = await SharedPreferences.getInstance();
@@ -103,7 +121,9 @@ class AppSettings extends ChangeNotifier {
         preferences.getInt(_processingConcurrencyKey),
       ),
       lastWorkspaceType: WorkspaceType.values.firstWhere(
-        (item) => item.name == preferences.getString(_lastWorkspaceKey),
+        (item) =>
+            item != WorkspaceType.mixed &&
+            item.name == preferences.getString(_lastWorkspaceKey),
         orElse: () => WorkspaceType.image,
       ),
       lastProcessMode: ProcessMode.values.firstWhere(
@@ -116,6 +136,18 @@ class AppSettings extends ChangeNotifier {
       ),
       passwordProtectionEnabled:
           preferences.getBool(_passwordProtectionKey) ?? false,
+      compressionEnabled: preferences.getBool(_compressionEnabledKey) ?? false,
+      compressionFormat: CompressionArchiveFormat.values.firstWhere(
+        (item) => item.name == preferences.getString(_compressionFormatKey),
+        orElse: () => CompressionArchiveFormat.zip,
+      ),
+      compressionGrouping: CompressionGrouping.values.firstWhere(
+        (item) => item.name == preferences.getString(_compressionGroupingKey),
+        orElse: () => CompressionGrouping.perFolder,
+      ),
+      selectedArchivePasswordProfileId: preferences.getString(
+        _selectedArchivePasswordProfileKey,
+      ),
       defaultExportPath: preferences.getString(_defaultExportPathKey),
       defaultExportTreeUri: preferences.getString(_defaultExportTreeKey),
       defaultExportLabel: preferences.getString(_defaultExportLabelKey),
@@ -172,6 +204,7 @@ class AppSettings extends ChangeNotifier {
     required ScrambleAlgorithm algorithm,
     required bool passwordProtectionEnabled,
   }) async {
+    if (workspaceType == WorkspaceType.mixed) return;
     _lastWorkspaceType = workspaceType;
     _lastProcessMode = mode;
     _lastAlgorithm = algorithm;
@@ -182,6 +215,38 @@ class AppSettings extends ChangeNotifier {
       _preferences.setString(_lastAlgorithmKey, algorithm.id),
       _preferences.setBool(_passwordProtectionKey, passwordProtectionEnabled),
     ]);
+  }
+
+  Future<void> setCompressionEnabled(bool value) async {
+    if (_compressionEnabled == value) return;
+    _compressionEnabled = value;
+    await _preferences.setBool(_compressionEnabledKey, value);
+    notifyListeners();
+  }
+
+  Future<void> setCompressionFormat(CompressionArchiveFormat value) async {
+    if (_compressionFormat == value) return;
+    _compressionFormat = value;
+    await _preferences.setString(_compressionFormatKey, value.name);
+    notifyListeners();
+  }
+
+  Future<void> setCompressionGrouping(CompressionGrouping value) async {
+    if (_compressionGrouping == value) return;
+    _compressionGrouping = value;
+    await _preferences.setString(_compressionGroupingKey, value.name);
+    notifyListeners();
+  }
+
+  Future<void> setSelectedArchivePasswordProfile(String? id) async {
+    if (_selectedArchivePasswordProfileId == id) return;
+    _selectedArchivePasswordProfileId = id;
+    if (id == null) {
+      await _preferences.remove(_selectedArchivePasswordProfileKey);
+    } else {
+      await _preferences.setString(_selectedArchivePasswordProfileKey, id);
+    }
+    notifyListeners();
   }
 
   Future<void> setDefaultExport({

@@ -10,6 +10,7 @@ import 'app_strings.dart';
 import 'export_history_dialog.dart';
 import 'models.dart';
 import 'settings_dialog.dart';
+import 'shared_import_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,6 +22,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _dragging = false;
   bool _updateScheduled = false;
+  bool _sharedDialogScheduled = false;
 
   @override
   void didChangeDependencies() {
@@ -38,9 +40,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettings>();
+    final controller = context.watch<AppController>();
     final strings = AppStrings(settings.language);
     final width = MediaQuery.sizeOf(context).width;
     final desktop = width >= 960;
+    _scheduleSharedImportDialog(controller.pendingSharedImport);
 
     return Scaffold(
       appBar: desktop
@@ -120,6 +124,21 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  void _scheduleSharedImportDialog(SharedImportRequest? request) {
+    if (request == null || _sharedDialogScheduled) return;
+    _sharedDialogScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      await showSharedImportDialog(context, request);
+      if (!mounted) return;
+      final controller = context.read<AppController>();
+      if (controller.pendingSharedImport?.id == request.id) {
+        controller.dismissSharedImport(request);
+      }
+      setState(() => _sharedDialogScheduled = false);
+    });
   }
 }
 
@@ -452,7 +471,12 @@ class _Header extends StatelessWidget {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
     final textMode = controller.workspaceType == WorkspaceType.text;
-    final heroTitle = textMode
+    final mixedMode = controller.hasMixedBatch;
+    final heroTitle = mixedMode
+        ? (controller.mode == ProcessMode.scramble
+              ? strings['heroMixedScramble']
+              : strings['heroMixedRestore'])
+        : textMode
         ? (controller.mode == ProcessMode.scramble
               ? strings['heroTextEncode']
               : strings['heroTextRestore'])
@@ -505,7 +529,11 @@ class _Header extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                textMode ? strings['heroTextDesc'] : strings['heroDesc'],
+                mixedMode
+                    ? strings['heroMixedDesc']
+                    : textMode
+                    ? strings['heroTextDesc']
+                    : strings['heroDesc'],
                 style: TextStyle(
                   height: 1.6,
                   color: scheme.onSurface.withValues(alpha: 0.65),
@@ -520,11 +548,21 @@ class _Header extends StatelessWidget {
           children: [
             _FeaturePill(
               icon: Icons.verified_outlined,
-              label: textMode ? strings['byteExact'] : strings['pixelExact'],
+              label: mixedMode
+                  ? strings['mixedExact']
+                  : textMode
+                  ? strings['byteExact']
+                  : strings['pixelExact'],
             ),
             _FeaturePill(
-              icon: textMode ? Icons.code_rounded : Icons.image_outlined,
-              label: textMode
+              icon: mixedMode
+                  ? Icons.folder_zip_outlined
+                  : textMode
+                  ? Icons.code_rounded
+                  : Icons.image_outlined,
+              label: mixedMode
+                  ? 'PNG + Base64'
+                  : textMode
                   ? strings['base64Standard']
                   : strings['pngOutput'],
             ),
@@ -617,23 +655,44 @@ class _ModeSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
     final textMode = controller.workspaceType == WorkspaceType.text;
+    final mixedMode = controller.hasMixedBatch;
     return Align(
       alignment: Alignment.centerLeft,
       child: SegmentedButton<ProcessMode>(
         segments: [
           ButtonSegment(
             value: ProcessMode.scramble,
-            icon: Icon(textMode ? Icons.code_rounded : Icons.grid_view_rounded),
-            label: Text(textMode ? strings['textEncode'] : strings['scramble']),
+            icon: Icon(
+              mixedMode
+                  ? Icons.auto_awesome_mosaic_outlined
+                  : textMode
+                  ? Icons.code_rounded
+                  : Icons.grid_view_rounded,
+            ),
+            label: Text(
+              mixedMode
+                  ? strings['shareScramble']
+                  : textMode
+                  ? strings['textEncode']
+                  : strings['scramble'],
+            ),
           ),
           ButtonSegment(
             value: ProcessMode.restore,
             icon: Icon(
-              textMode
+              mixedMode
+                  ? Icons.restore_page_outlined
+                  : textMode
                   ? Icons.settings_backup_restore_rounded
                   : Icons.auto_fix_high_outlined,
             ),
-            label: Text(textMode ? strings['textRestore'] : strings['restore']),
+            label: Text(
+              mixedMode
+                  ? strings['shareRestore']
+                  : textMode
+                  ? strings['textRestore']
+                  : strings['restore'],
+            ),
           ),
         ],
         selected: {controller.mode},
@@ -756,6 +815,14 @@ class _ImportCard extends StatelessWidget {
                         icon: const Icon(Icons.folder_open_outlined, size: 19),
                         label: Text(strings['chooseFolder']),
                       ),
+                      if (Theme.of(context).platform == TargetPlatform.android)
+                        OutlinedButton.icon(
+                          onPressed: controller.isProcessing
+                              ? null
+                              : controller.pickArchives,
+                          icon: const Icon(Icons.folder_zip_outlined, size: 19),
+                          label: Text(strings['chooseArchive']),
+                        ),
                     ],
                   ),
                 ],
@@ -827,6 +894,13 @@ class _ConfigurationCard extends StatelessWidget {
               const SizedBox(height: 8),
               _PasswordField(strings: strings),
             ],
+            if (controller.mode == ProcessMode.scramble &&
+                controller.workspaceType == WorkspaceType.image) ...[
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 8),
+              _CompressionPanel(strings: strings),
+            ],
             if (controller.mode == ProcessMode.restore &&
                 controller.algorithm.needsSeed) ...[
               const SizedBox(height: 12),
@@ -845,6 +919,401 @@ class _ConfigurationCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _CompressionPanel extends StatelessWidget {
+  const _CompressionPanel({required this.strings});
+
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<AppController>();
+    final enabled = controller.canUseCompression && !controller.isProcessing;
+    final selectedProfileId =
+        controller.selectedArchivePasswordProfile?.id ?? '';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: controller.compressionEnabled,
+          onChanged: enabled ? controller.setCompressionEnabled : null,
+          secondary: const Icon(Icons.folder_zip_outlined),
+          title: Text(
+            strings['compressionOutput'],
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text(
+            controller.canUseCompression
+                ? strings['compressionOutputDesc']
+                : strings['compressionMixedUnavailable'],
+            style: const TextStyle(fontSize: 11.5, height: 1.45),
+          ),
+        ),
+        if (controller.compressionEnabled && controller.canUseCompression) ...[
+          const SizedBox(height: 8),
+          Text(
+            strings['archiveFormat'],
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          SegmentedButton<CompressionArchiveFormat>(
+            segments: const [
+              ButtonSegment(
+                value: CompressionArchiveFormat.zip,
+                label: Text('ZIP'),
+                icon: Icon(Icons.archive_outlined),
+              ),
+              ButtonSegment(
+                value: CompressionArchiveFormat.sevenZip,
+                label: Text('7Z'),
+                icon: Icon(Icons.inventory_2_outlined),
+              ),
+            ],
+            selected: {controller.compressionFormat},
+            onSelectionChanged: enabled
+                ? (selection) =>
+                      controller.setCompressionFormat(selection.first)
+                : null,
+            showSelectedIcon: false,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            strings['groupingMode'],
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final item in CompressionGrouping.values)
+                ChoiceChip(
+                  label: Text(switch (item) {
+                    CompressionGrouping.perFolder => strings['groupPerFolder'],
+                    CompressionGrouping.perFile => strings['groupPerFile'],
+                    CompressionGrouping.combined => strings['groupCombined'],
+                  }),
+                  selected: controller.compressionGrouping == item,
+                  onSelected: enabled
+                      ? (_) => controller.setCompressionGrouping(item)
+                      : null,
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          DropdownButtonFormField<String>(
+            key: ValueKey('archive-password-$selectedProfileId'),
+            initialValue: selectedProfileId,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: strings['archiveEncryption'],
+              prefixIcon: const Icon(Icons.key_outlined),
+            ),
+            items: [
+              DropdownMenuItem(
+                value: '',
+                child: Text(strings['noArchivePassword']),
+              ),
+              for (final profile in controller.archivePasswordProfiles)
+                DropdownMenuItem(value: profile.id, child: Text(profile.name)),
+            ],
+            onChanged: enabled
+                ? (value) => controller.setArchivePasswordProfile(
+                    value == null || value.isEmpty ? null : value,
+                  )
+                : null,
+          ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: enabled
+                  ? () => _showPasswordVault(context, strings)
+                  : null,
+              icon: const Icon(Icons.password_rounded),
+              label: Text(strings['managePasswords']),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+Future<void> _showPasswordVault(BuildContext context, AppStrings strings) {
+  final compact = MediaQuery.sizeOf(context).width < 600;
+  if (compact) {
+    return showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: 0.86,
+        child: _PasswordVaultPanel(strings: strings, compact: true),
+      ),
+    );
+  }
+  return showDialog<void>(
+    context: context,
+    builder: (_) => Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 680),
+        child: _PasswordVaultPanel(strings: strings, compact: false),
+      ),
+    ),
+  );
+}
+
+class _PasswordVaultPanel extends StatelessWidget {
+  const _PasswordVaultPanel({required this.strings, required this.compact});
+
+  final AppStrings strings;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.watch<AppController>();
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surface,
+      borderRadius: compact
+          ? const BorderRadius.vertical(top: Radius.circular(24))
+          : BorderRadius.circular(24),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 12, 12),
+            child: Row(
+              children: [
+                const Icon(Icons.password_rounded),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    strings['passwordVaultTitle'],
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  tooltip: strings['close'],
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              strings['passwordVaultDesc'],
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.5,
+                color: scheme.onSurface.withValues(alpha: 0.65),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: controller.archivePasswordProfiles.isEmpty
+                ? Center(child: Text(strings['passwordVaultEmpty']))
+                : ListView.separated(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    itemCount: controller.archivePasswordProfiles.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final profile = controller.archivePasswordProfiles[index];
+                      final selected =
+                          controller.selectedArchivePasswordProfile?.id ==
+                          profile.id;
+                      return ListTile(
+                        minTileHeight: 64,
+                        selected: selected,
+                        selectedTileColor: scheme.primary.withValues(
+                          alpha: 0.1,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          side: BorderSide(color: scheme.outlineVariant),
+                        ),
+                        leading: Icon(
+                          selected ? Icons.check_circle : Icons.key_outlined,
+                          color: selected ? scheme.primary : null,
+                        ),
+                        title: Text(
+                          profile.name,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                        subtitle: const Text('••••••••'),
+                        onTap: () =>
+                            controller.setArchivePasswordProfile(profile.id),
+                        trailing: Wrap(
+                          spacing: 2,
+                          children: [
+                            IconButton(
+                              tooltip: strings['editPassword'],
+                              onPressed: () => _showPasswordEditor(
+                                context,
+                                strings,
+                                profileId: profile.id,
+                                initialName: profile.name,
+                                initialPassword: profile.password,
+                              ),
+                              icon: const Icon(Icons.edit_outlined),
+                            ),
+                            IconButton(
+                              tooltip: strings['delete'],
+                              onPressed: () => _confirmPasswordDelete(
+                                context,
+                                strings,
+                                profile.id,
+                              ),
+                              icon: const Icon(Icons.delete_outline_rounded),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => _showPasswordEditor(context, strings),
+                icon: const Icon(Icons.add_rounded),
+                label: Text(strings['addPassword']),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Future<void> _showPasswordEditor(
+  BuildContext context,
+  AppStrings strings, {
+  String? profileId,
+  String initialName = '',
+  String initialPassword = '',
+}) async {
+  final controller = context.read<AppController>();
+  final nameController = TextEditingController(text: initialName);
+  final passwordController = TextEditingController(text: initialPassword);
+  var visible = false;
+  String? error;
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: Text(
+          profileId == null ? strings['addPassword'] : strings['editPassword'],
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                autofocus: true,
+                decoration: InputDecoration(labelText: strings['profileName']),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: passwordController,
+                obscureText: !visible,
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  labelText: strings['profilePassword'],
+                  errorText: error,
+                  suffixIcon: IconButton(
+                    onPressed: () => setState(() => visible = !visible),
+                    icon: Icon(
+                      visible
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(strings['cancelAction']),
+          ),
+          FilledButton(
+            onPressed: () async {
+              try {
+                if (profileId == null) {
+                  await controller.addArchivePasswordProfile(
+                    name: nameController.text,
+                    password: passwordController.text,
+                  );
+                } else {
+                  await controller.updateArchivePasswordProfile(
+                    profileId,
+                    name: nameController.text,
+                    password: passwordController.text,
+                  );
+                }
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+              } catch (exception) {
+                setState(() {
+                  error = exception.toString().replaceFirst(
+                    'Invalid argument(s): ',
+                    '',
+                  );
+                });
+              }
+            },
+            child: Text(strings['save']),
+          ),
+        ],
+      ),
+    ),
+  );
+  nameController.dispose();
+  passwordController.dispose();
+}
+
+Future<void> _confirmPasswordDelete(
+  BuildContext context,
+  AppStrings strings,
+  String profileId,
+) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(strings['deletePasswordConfirm']),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(strings['cancelAction']),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(strings['delete']),
+        ),
+      ],
+    ),
+  );
+  if (confirmed == true && context.mounted) {
+    await context.read<AppController>().deleteArchivePasswordProfile(profileId);
   }
 }
 
@@ -1317,7 +1786,9 @@ class _PasswordFieldState extends State<_PasswordField> {
         labelText: widget.strings['password'],
         prefixIcon: const Icon(Icons.password_rounded),
         suffixIcon: IconButton(
-          tooltip: _visible ? '隐藏密码' : '显示密码',
+          tooltip: _visible
+              ? widget.strings['hidePassword']
+              : widget.strings['showPassword'],
           onPressed: () => setState(() => _visible = !_visible),
           icon: Icon(
             _visible
@@ -1339,6 +1810,7 @@ class _QueueCard extends StatelessWidget {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
     final textMode = controller.workspaceType == WorkspaceType.text;
+    final mixedMode = controller.hasMixedBatch;
     final groupedTasks = <String, List<ImageTask>>{};
     final looseTasks = <ImageTask>[];
     for (final task in controller.tasks) {
@@ -1355,10 +1827,8 @@ class _QueueCard extends StatelessWidget {
           name: group.first.sourceRootName,
           tasks: group,
           strings: strings,
-          textMode: textMode,
         ),
-      for (final task in looseTasks)
-        _TaskRow(task: task, strings: strings, textMode: textMode),
+      for (final task in looseTasks) _TaskRow(task: task, strings: strings),
     ];
     final listHeight = controller.tasks.isEmpty
         ? 260.0
@@ -1373,10 +1843,16 @@ class _QueueCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: _SectionTitle(
-                    icon: textMode
+                    icon: mixedMode
+                        ? Icons.collections_bookmark_outlined
+                        : textMode
                         ? Icons.library_books_outlined
                         : Icons.photo_library_outlined,
-                    title: textMode ? strings['textQueue'] : strings['queue'],
+                    title: mixedMode
+                        ? strings['mixedQueue']
+                        : textMode
+                        ? strings['textQueue']
+                        : strings['queue'],
                   ),
                 ),
                 Container(
@@ -1390,7 +1866,11 @@ class _QueueCard extends StatelessWidget {
                   ),
                   child: Text(
                     '${controller.tasks.length} '
-                    '${textMode ? strings['textFiles'] : strings['files']}',
+                    '${mixedMode
+                        ? strings['mixedFiles']
+                        : textMode
+                        ? strings['textFiles']
+                        : strings['files']}',
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
@@ -1437,7 +1917,7 @@ class _QueueCard extends StatelessWidget {
                         height: 1.4,
                         color:
                             controller.failedCount > 0 ||
-                                controller.detailMessage != null
+                                controller.detailMessageIsError
                             ? scheme.error
                             : scheme.onSurface.withValues(alpha: 0.65),
                       ),
@@ -1483,6 +1963,8 @@ class _QueueCard extends StatelessWidget {
               icon: Icon(
                 controller.isProcessing
                     ? Icons.stop_circle_outlined
+                    : mixedMode
+                    ? Icons.folder_zip_outlined
                     : textMode
                     ? (controller.mode == ProcessMode.scramble
                           ? Icons.code_rounded
@@ -1494,6 +1976,10 @@ class _QueueCard extends StatelessWidget {
               label: Text(
                 controller.isProcessing
                     ? strings['cancel']
+                    : mixedMode
+                    ? (controller.mode == ProcessMode.scramble
+                          ? strings['startMixedScramble']
+                          : strings['startMixedRestore'])
                     : textMode
                     ? (controller.mode == ProcessMode.scramble
                           ? strings['startTextEncode']
@@ -1516,13 +2002,11 @@ class _FolderQueueGroup extends StatelessWidget {
     required this.name,
     required this.tasks,
     required this.strings,
-    required this.textMode,
   });
 
   final String name;
   final List<ImageTask> tasks;
   final AppStrings strings;
-  final bool textMode;
 
   @override
   Widget build(BuildContext context) {
@@ -1569,11 +2053,7 @@ class _FolderQueueGroup extends StatelessWidget {
           ),
           children: [
             for (var index = 0; index < tasks.length; index++) ...[
-              _TaskRow(
-                task: tasks[index],
-                strings: strings,
-                textMode: textMode,
-              ),
+              _TaskRow(task: tasks[index], strings: strings),
               if (index != tasks.length - 1) const SizedBox(height: 8),
             ],
           ],
@@ -1632,18 +2112,14 @@ class _EmptyQueue extends StatelessWidget {
 }
 
 class _TaskRow extends StatelessWidget {
-  const _TaskRow({
-    required this.task,
-    required this.strings,
-    required this.textMode,
-  });
+  const _TaskRow({required this.task, required this.strings});
   final ImageTask task;
   final AppStrings strings;
-  final bool textMode;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final textMode = task.workspaceType == WorkspaceType.text;
     final (icon, color, label) = switch (task.status) {
       TaskStatus.queued => (
         Icons.schedule_rounded,

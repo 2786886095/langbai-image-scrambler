@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.1.0+3
+version: 1.2.0+4
 
 environment:
   sdk: ^3.12.0
@@ -32,11 +32,13 @@ dependencies:
     sdk: flutter
   flutter_localizations:
     sdk: flutter
+  archive: ^4.0.9
   cryptography: ^2.9.0
   crypto: ^3.0.7
   cross_file: ^0.3.5+4
   desktop_drop: ^0.7.0
   file_picker: ^10.3.10
+  flutter_secure_storage: ^10.3.1
   http: ^1.6.0
   image: ^4.7.2
   path: ^1.9.1
@@ -55,6 +57,10 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+dependency_overrides:
+  flutter_secure_storage_windows:
+    path: third_party/flutter_secure_storage_windows
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
@@ -72,6 +78,8 @@ flutter:
     - family: NotoSansCJKTC
       fonts:
         - asset: assets/fonts/NotoSansCJKtc-Regular.otf
+  assets:
+    - assets/bin/windows/7zr.exe
 
   # To add assets to your application, add an assets section, like this:
   # assets:

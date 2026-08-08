@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -12,6 +13,7 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.MessageDigest
+import java.util.ArrayDeque
 import java.util.UUID
 import kotlin.concurrent.thread
 
@@ -25,19 +27,70 @@ class MainActivity : FlutterActivity() {
     private var pendingTreeResult: MethodChannel.Result? = null
     private var pendingSaveResult: MethodChannel.Result? = null
     private var pendingSaveSourcePath: String? = null
+    private var platformChannel: MethodChannel? = null
+    private val pendingShares = ArrayDeque<Map<String, Any>>()
+    private val archiveExtractor by lazy { ArchiveExtractor(cacheDir, contentResolver) }
+    private val archiveCreator by lazy { ArchiveCreator(cacheDir) }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        collectSharedIntent(intent)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-            .setMethodCallHandler { call, result -> handleCall(call, result) }
+        platformChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).also {
+            it.setMethodCallHandler { call, result -> handleCall(call, result) }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (collectSharedIntent(intent)) {
+            platformChannel?.invokeMethod("sharedIntentAvailable", null)
+        }
     }
 
     private fun handleCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
+            "takePendingShare" -> result.success(pendingShares.pollFirst())
             "pickTree" -> pickTree(result)
             "listTree" -> runInBackground(result) {
                 val treeUri = Uri.parse(call.argument<String>("treeUri")!!)
-                mapOf("items" to listTree(treeUri))
+                mapOf("items" to listDirectory(treeUri))
+            }
+            "listSharedDirectory" -> runInBackground(result) {
+                val uri = Uri.parse(call.argument<String>("uri")!!)
+                mapOf(
+                    "name" to queryDisplayName(uri),
+                    "items" to listDirectory(uri),
+                )
+            }
+            "extractArchive" -> runInBackground(result) {
+                val name = call.argument<String>("name") ?: "压缩包.zip"
+                val password = call.argument<String>("password")?.takeIf { it.isNotEmpty() }
+                val sourcePath = call.argument<String>("sourcePath")
+                if (sourcePath != null) {
+                    archiveExtractor.extractFromPath(sourcePath, name, password)
+                } else {
+                    archiveExtractor.extractFromUri(
+                        Uri.parse(call.argument<String>("uri")!!),
+                        name,
+                        password,
+                    )
+                }
+            }
+            "createArchive" -> runInBackground(result) {
+                val format = call.argument<String>("format") ?: "7z"
+                if (format != "7z") error("Android 原生压缩仅处理 7Z")
+                @Suppress("UNCHECKED_CAST")
+                val entries = call.argument<List<Map<String, Any?>>>("entries") ?: emptyList()
+                archiveCreator.create7z(
+                    call.argument<String>("outputPath")!!,
+                    entries,
+                    call.argument<String>("password"),
+                )
             }
             "copyUriToCache" -> runInBackground(result) {
                 copyUriToCache(
@@ -72,6 +125,96 @@ class MainActivity : FlutterActivity() {
             "saveDocument" -> saveDocument(call, result)
             else -> result.notImplemented()
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun collectSharedIntent(source: Intent?): Boolean {
+        val intent = source ?: return false
+        if (intent.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE, Intent.ACTION_VIEW)) {
+            return false
+        }
+        val uris = linkedSetOf<Uri>()
+        when (intent.action) {
+            Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)?.let(uris::add)
+            Intent.ACTION_SEND_MULTIPLE ->
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(uris::addAll)
+            Intent.ACTION_VIEW -> intent.data?.let(uris::add)
+        }
+        val clipData = intent.clipData
+        if (clipData != null) {
+            for (index in 0 until clipData.itemCount) {
+                clipData.getItemAt(index).uri?.let(uris::add)
+            }
+        }
+        if (uris.isEmpty()) return false
+
+        val permissionFlags = intent.flags and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        val items = uris.mapNotNull { uri ->
+            if (permissionFlags != 0) {
+                try {
+                    contentResolver.takePersistableUriPermission(uri, permissionFlags)
+                } catch (_: SecurityException) {
+                    // Most share providers grant temporary access for this activity task.
+                }
+            }
+            incomingItem(uri, intent.type)
+        }
+        if (items.isEmpty()) return false
+        pendingShares.addLast(
+            mapOf(
+                "id" to UUID.randomUUID().toString(),
+                "items" to items,
+            ),
+        )
+        return true
+    }
+
+    private fun incomingItem(uri: Uri, fallbackMime: String?): Map<String, Any>? {
+        var name: String? = null
+        var mime: String? = null
+        var size = 0L
+        try {
+            contentResolver.query(
+                uri,
+                arrayOf(
+                    OpenableColumns.DISPLAY_NAME,
+                    OpenableColumns.SIZE,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                ),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    if (nameIndex >= 0 && !cursor.isNull(nameIndex)) name = cursor.getString(nameIndex)
+                    if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex)
+                    if (mimeIndex >= 0 && !cursor.isNull(mimeIndex)) mime = cursor.getString(mimeIndex)
+                }
+            }
+        } catch (_: Throwable) {
+            // Fall back to URI metadata below.
+        }
+        val file = if (uri.scheme == "file") uri.path?.let(::File) else null
+        name = name ?: file?.name ?: uri.lastPathSegment?.substringAfterLast('/') ?: "分享文件"
+        mime = mime ?: contentResolver.getType(uri) ?: fallbackMime ?: "application/octet-stream"
+        val isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR ||
+            mime == "resource/folder" ||
+            mime == "inode/directory" ||
+            file?.isDirectory == true
+        if (size == 0L && file?.isFile == true) size = file.length()
+        val resolvedName = name ?: "分享文件"
+        val resolvedMime = mime ?: "application/octet-stream"
+        return mapOf(
+            "uri" to uri.toString(),
+            "name" to resolvedName,
+            "mimeType" to resolvedMime,
+            "size" to size,
+            "isDirectory" to isDirectory,
+        )
     }
 
     private fun pickTree(result: MethodChannel.Result) {
@@ -170,20 +313,30 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun listTree(treeUri: Uri): List<Map<String, Any>> {
-        val rootId = DocumentsContract.getTreeDocumentId(treeUri)
+    private fun listDirectory(rootUri: Uri): List<Map<String, Any>> {
+        val isTree = DocumentsContract.isTreeUri(rootUri)
+        val rootId = if (isTree) {
+            DocumentsContract.getTreeDocumentId(rootUri)
+        } else {
+            DocumentsContract.getDocumentId(rootUri)
+        }
         val output = mutableListOf<Map<String, Any>>()
-        walkChildren(treeUri, rootId, "", output)
+        walkChildren(rootUri, rootId, "", output, isTree)
         return output
     }
 
     private fun walkChildren(
-        treeUri: Uri,
+        rootUri: Uri,
         parentDocumentId: String,
         relativeDirectory: String,
         output: MutableList<Map<String, Any>>,
+        isTree: Boolean,
     ) {
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocumentId)
+        val childrenUri = if (isTree) {
+            DocumentsContract.buildChildDocumentsUriUsingTree(rootUri, parentDocumentId)
+        } else {
+            DocumentsContract.buildChildDocumentsUri(rootUri.authority!!, parentDocumentId)
+        }
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -201,9 +354,13 @@ class MainActivity : FlutterActivity() {
                 val mime = cursor.getString(mimeIndex) ?: ""
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                     val childRelative = if (relativeDirectory.isEmpty()) name else "$relativeDirectory/$name"
-                    walkChildren(treeUri, id, childRelative, output)
+                    walkChildren(rootUri, id, childRelative, output, isTree)
                 } else if (mime.startsWith("image/") || isSupportedName(name)) {
-                    val uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                    val uri = if (isTree) {
+                        DocumentsContract.buildDocumentUriUsingTree(rootUri, id)
+                    } else {
+                        DocumentsContract.buildDocumentUri(rootUri.authority!!, id)
+                    }
                     output.add(
                         mapOf(
                             "uri" to uri.toString(),
@@ -397,6 +554,8 @@ class MainActivity : FlutterActivity() {
             try {
                 val value = block()
                 runOnUiThread { result.success(value) }
+            } catch (error: ArchiveImportException) {
+                runOnUiThread { result.error(error.code, error.message, null) }
             } catch (error: Throwable) {
                 runOnUiThread { result.error("saf_error", error.message, null) }
             }

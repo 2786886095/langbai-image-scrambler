@@ -43,4 +43,19 @@ void main() {
       expect(reopened.batch, isNull);
     },
   );
+
+  test('compression choices and selected password profile persist', () async {
+    SharedPreferences.setMockInitialValues({'check_updates': false});
+    final settings = await AppSettings.load();
+    await settings.setCompressionEnabled(true);
+    await settings.setCompressionFormat(CompressionArchiveFormat.sevenZip);
+    await settings.setCompressionGrouping(CompressionGrouping.combined);
+    await settings.setSelectedArchivePasswordProfile('profile-a');
+
+    final reopened = await AppSettings.load();
+    expect(reopened.compressionEnabled, isTrue);
+    expect(reopened.compressionFormat, CompressionArchiveFormat.sevenZip);
+    expect(reopened.compressionGrouping, CompressionGrouping.combined);
+    expect(reopened.selectedArchivePasswordProfileId, 'profile-a');
+  });
 }
