@@ -58,6 +58,45 @@ void main() {
   });
 
   test(
+    'restore completion and history open the recorded output location',
+    () async {
+      SharedPreferences.setMockInitialValues({'check_updates': false});
+      final settings = await AppSettings.load();
+      final files = _MemoryFileService();
+      final history = ExportHistoryStore.memory();
+      final controller = AppController(
+        settings,
+        fileService: files,
+        imageProcessor: _ConcurrentImageProcessor(),
+        historyStore: history,
+      );
+      controller.setMode(ProcessMode.restore);
+      controller.batch = ImportBatch(
+        tasks: [
+          ImageTask(
+            id: '1',
+            originalName: '混淆图.png',
+            relativeDirectory: '',
+            sourceRootName: '图包',
+          ),
+        ],
+        isFolder: true,
+        rootName: '图包',
+      );
+
+      await controller.process();
+
+      expect(controller.canOpenLastRestoreOutput, isTrue);
+      expect(history.entries.single.locationToReveal, 'memory');
+      expect(history.entries.single.locationIsDirectory, isTrue);
+      expect(await controller.openLastRestoreOutput(), isTrue);
+      expect(files.openedLocations.single, ('memory', true));
+      expect(await controller.openTaskOutput(controller.tasks.single), isTrue);
+      expect(files.openedLocations.last, ('memory/1.png', false));
+    },
+  );
+
+  test(
     'compression mode exports archives only and cleans staged PNG files',
     () async {
       SharedPreferences.setMockInitialValues({
@@ -120,9 +159,23 @@ class _ConcurrentImageProcessor extends ImageProcessor {
       verified: true,
     );
   }
+
+  @override
+  Future<ProcessedImage> restore({
+    required Uint8List inputBytes,
+    required ScrambleAlgorithm requestedAlgorithm,
+    String? password,
+    int? manualSeed,
+  }) async => ProcessedImage(
+    bytes: inputBytes,
+    algorithm: ScrambleAlgorithm.composite,
+    verified: true,
+  );
 }
 
 class _MemoryFileService extends FileService {
+  final List<(String, bool)> openedLocations = [];
+
   @override
   Future<Uint8List> readTask(ImageTask task) async =>
       Uint8List.fromList([int.parse(task.id)]);
@@ -152,6 +205,14 @@ class _MemoryFileService extends FileService {
     sha256Digest: task.id.padLeft(64, '0'),
     sizeBytes: bytes.length,
   );
+
+  @override
+  Future<void> openOutputLocation(
+    String location, {
+    required bool isDirectory,
+  }) async {
+    openedLocations.add((location, isDirectory));
+  }
 }
 
 class _ArchiveOnlyFileService extends FileService {

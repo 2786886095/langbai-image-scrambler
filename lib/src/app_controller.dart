@@ -67,6 +67,8 @@ class AppController extends ChangeNotifier {
   UpdateInfo? availableUpdate;
   bool checkingUpdate = false;
   String? undoingHistoryId;
+  String? openingLocationId;
+  String? lastExportHistoryId;
   bool detailMessageIsError = false;
   final List<SharedImportRequest> _pendingSharedImports = [];
 
@@ -79,6 +81,20 @@ class AppController extends ChangeNotifier {
   bool get canStart => tasks.isNotEmpty && !isProcessing;
   FileService get fileService => _fileService;
   List<ExportHistoryEntry> get exportHistory => _historyStore.entries;
+  ExportHistoryEntry? get lastExportEntry {
+    final id = lastExportHistoryId;
+    if (id == null) return null;
+    for (final entry in exportHistory) {
+      if (entry.id == id) return entry;
+    }
+    return null;
+  }
+
+  bool get canOpenLastRestoreOutput =>
+      mode == ProcessMode.restore &&
+      !isProcessing &&
+      completedCount > 0 &&
+      lastExportEntry?.locationToReveal != null;
   int get effectiveProcessingConcurrency =>
       _settings.effectiveProcessingConcurrency;
   SharedImportRequest? get pendingSharedImport =>
@@ -105,6 +121,7 @@ class AppController extends ChangeNotifier {
     passwordEnabled = false;
     password = '';
     manualSeed = '';
+    lastExportHistoryId = null;
     _resetTaskStates();
     _persistProcessingDefaults();
     notifyListeners();
@@ -128,6 +145,7 @@ class AppController extends ChangeNotifier {
     statusKey = 'ready';
     detailMessage = null;
     detailMessageIsError = false;
+    lastExportHistoryId = null;
     unawaited(_fileService.cleanupTemporaryRoots(temporaryRoots));
     _persistProcessingDefaults();
     notifyListeners();
@@ -265,6 +283,7 @@ class AppController extends ChangeNotifier {
         ? '已导入 ${imported.tasks.length} 个文件，跳过 ${imported.skippedCount} 个其他文件'
         : '已通过分享导入 ${imported.tasks.length} 个文件';
     detailMessageIsError = false;
+    lastExportHistoryId = null;
     _pendingSharedImports.removeWhere((item) => item.id == request.id);
     _persistProcessingDefaults();
     notifyListeners();
@@ -291,6 +310,7 @@ class AppController extends ChangeNotifier {
       if (imported == null) return;
       batch = _mergeBatches(batch, imported);
       progress = 0;
+      lastExportHistoryId = null;
       statusKey = batch!.tasks.isEmpty
           ? (workspaceType == WorkspaceType.text
                 ? 'textFolderEmpty'
@@ -311,6 +331,7 @@ class AppController extends ChangeNotifier {
     statusKey = 'ready';
     detailMessage = null;
     detailMessageIsError = false;
+    lastExportHistoryId = null;
     unawaited(_fileService.cleanupTemporaryRoots(temporaryRoots));
     notifyListeners();
   }
@@ -334,6 +355,7 @@ class AppController extends ChangeNotifier {
     statusKey = 'ready';
     detailMessage = null;
     detailMessageIsError = false;
+    lastExportHistoryId = null;
     notifyListeners();
   }
 
@@ -374,6 +396,48 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  Future<bool> openExportLocation(ExportHistoryEntry entry) async {
+    if (openingLocationId != null) return false;
+    openingLocationId = 'history:${entry.id}';
+    notifyListeners();
+    try {
+      await _fileService.openExportLocation(entry);
+      return true;
+    } catch (error) {
+      detailMessage = _errorText(error);
+      detailMessageIsError = true;
+      return false;
+    } finally {
+      openingLocationId = null;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> openTaskOutput(ImageTask task) async {
+    final location = task.outputLocation;
+    if (location == null || location.isEmpty || openingLocationId != null) {
+      return false;
+    }
+    openingLocationId = 'task:${task.id}';
+    notifyListeners();
+    try {
+      await _fileService.openOutputLocation(location, isDirectory: false);
+      return true;
+    } catch (error) {
+      detailMessage = _errorText(error);
+      detailMessageIsError = true;
+      return false;
+    } finally {
+      openingLocationId = null;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> openLastRestoreOutput() async {
+    final entry = lastExportEntry;
+    return entry == null ? false : openExportLocation(entry);
+  }
+
   Future<void> process() async {
     if (!canStart || batch == null) {
       statusKey = 'selectFirst';
@@ -401,6 +465,7 @@ class AppController extends ChangeNotifier {
     }
 
     if (compressionEnabled && canUseCompression) {
+      lastExportHistoryId = null;
       await _processCompressed(parsedSeed);
       return;
     }
@@ -417,6 +482,7 @@ class AppController extends ChangeNotifier {
     }
 
     isProcessing = true;
+    lastExportHistoryId = null;
     stopRequested = false;
     detailMessage = null;
     detailMessageIsError = false;
@@ -476,28 +542,30 @@ class AppController extends ChangeNotifier {
         ...target.createdDirectories,
         for (final output in outputs) ...output.createdDirectories,
       }.toList(growable: false);
-      await _historyStore.add(
-        ExportHistoryEntry(
-          id: DateTime.now().microsecondsSinceEpoch.toString(),
-          createdAt: DateTime.now(),
-          workspaceType: batch!.workspaceType,
-          mode: mode,
-          targetLabel: target.displayLabel.isNotEmpty
-              ? target.displayLabel
-              : outputs.first.displayName,
-          artifacts: outputs
-              .map(
-                (output) => ExportArtifact(
-                  location: output.location,
-                  displayName: output.displayName,
-                  sha256: output.sha256Digest,
-                  sizeBytes: output.sizeBytes,
-                ),
-              )
-              .toList(growable: false),
-          createdDirectories: createdDirectories,
-        ),
+      final historyEntry = ExportHistoryEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        createdAt: DateTime.now(),
+        workspaceType: batch!.workspaceType,
+        mode: mode,
+        targetLabel: target.displayLabel.isNotEmpty
+            ? target.displayLabel
+            : outputs.first.displayName,
+        artifacts: outputs
+            .map(
+              (output) => ExportArtifact(
+                location: output.location,
+                displayName: output.displayName,
+                sha256: output.sha256Digest,
+                sizeBytes: output.sizeBytes,
+              ),
+            )
+            .toList(growable: false),
+        createdDirectories: createdDirectories,
+        revealLocation: _revealLocation(target, outputs),
+        revealIsDirectory: _revealIsDirectory(target),
       );
+      await _historyStore.add(historyEntry);
+      lastExportHistoryId = historyEntry.id;
       await _historyStore.cleanup(_settings.historyRetentionDays);
     }
 
@@ -631,28 +699,30 @@ class AppController extends ChangeNotifier {
       ...target.createdDirectories,
       for (final output in outputs) ...output.createdDirectories,
     }.toList(growable: false);
-    await _historyStore.add(
-      ExportHistoryEntry(
-        id: DateTime.now().microsecondsSinceEpoch.toString(),
-        createdAt: DateTime.now(),
-        workspaceType: batch!.workspaceType,
-        mode: mode,
-        targetLabel: target.displayLabel.isNotEmpty
-            ? target.displayLabel
-            : outputs.first.displayName,
-        artifacts: outputs
-            .map(
-              (output) => ExportArtifact(
-                location: output.location,
-                displayName: output.displayName,
-                sha256: output.sha256Digest,
-                sizeBytes: output.sizeBytes,
-              ),
-            )
-            .toList(growable: false),
-        createdDirectories: createdDirectories,
-      ),
+    final historyEntry = ExportHistoryEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      createdAt: DateTime.now(),
+      workspaceType: batch!.workspaceType,
+      mode: mode,
+      targetLabel: target.displayLabel.isNotEmpty
+          ? target.displayLabel
+          : outputs.first.displayName,
+      artifacts: outputs
+          .map(
+            (output) => ExportArtifact(
+              location: output.location,
+              displayName: output.displayName,
+              sha256: output.sha256Digest,
+              sizeBytes: output.sizeBytes,
+            ),
+          )
+          .toList(growable: false),
+      createdDirectories: createdDirectories,
+      revealLocation: _revealLocation(target, outputs),
+      revealIsDirectory: _revealIsDirectory(target),
     );
+    await _historyStore.add(historyEntry);
+    lastExportHistoryId = historyEntry.id;
     await _historyStore.cleanup(_settings.historyRetentionDays);
   }
 
@@ -676,6 +746,19 @@ class AppController extends ChangeNotifier {
       manualSeed: parsedSeed,
     );
   }
+
+  String? _revealLocation(ExportTarget target, List<SaveOutputResult> outputs) {
+    if (target.singleFile) {
+      return outputs.isEmpty ? null : outputs.first.location;
+    }
+    if (target.createdDirectories.length == 1) {
+      return target.createdDirectories.first;
+    }
+    if (target.isAndroidTree) return target.treeUri;
+    return target.path ?? (outputs.isEmpty ? null : outputs.first.location);
+  }
+
+  bool _revealIsDirectory(ExportTarget target) => !target.singleFile;
 
   ImportBatch _mergeBatches(ImportBatch? current, ImportBatch imported) {
     if (current == null) return imported;

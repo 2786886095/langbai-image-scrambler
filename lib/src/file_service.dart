@@ -9,8 +9,13 @@ import 'package:path/path.dart' as path;
 import 'app_settings.dart';
 import 'export_history.dart';
 import 'models.dart';
+import 'windows_archive_extractor.dart';
 
 class FileService {
+  FileService({WindowsArchiveExtractor? windowsArchiveExtractor})
+    : _windowsArchiveExtractor =
+          windowsArchiveExtractor ?? const WindowsArchiveExtractor();
+
   static const _channel = MethodChannel('com.langbai.imagescrambler/saf');
   static const _imageExtensions = [
     'png',
@@ -22,6 +27,7 @@ class FileService {
     'tiff',
   ];
   Future<void> _saveTail = Future<void>.value();
+  final WindowsArchiveExtractor _windowsArchiveExtractor;
   bool _drainingSharedIntents = false;
   void Function(SharedImportRequest request)? _sharedImportListener;
 
@@ -144,9 +150,23 @@ class FileService {
           };
           late final Map<String, dynamic>? extracted;
           try {
-            extracted = await _channel.invokeMapMethod<String, dynamic>(
-              'extractArchive',
-              arguments,
+            if (Platform.isWindows && item.sourcePath != null) {
+              extracted = await _windowsArchiveExtractor.extract(
+                sourcePath: item.sourcePath!,
+                displayName: item.name,
+                password: archivePasswords[sourceKey],
+              );
+            } else {
+              extracted = await _channel.invokeMapMethod<String, dynamic>(
+                'extractArchive',
+                arguments,
+              );
+            }
+          } on WindowsArchiveException catch (error) {
+            throw SharedImportException(
+              error.message,
+              code: error.code,
+              sourceName: item.name,
             );
           } on PlatformException catch (error) {
             throw SharedImportException(
@@ -961,6 +981,58 @@ class FileService {
       missing: missing,
       failed: failed,
     );
+  }
+
+  Future<void> openExportLocation(ExportHistoryEntry entry) async {
+    final location = entry.locationToReveal;
+    if (location == null || location.isEmpty) {
+      throw const FileServiceException('导出记录中没有可打开的位置');
+    }
+    await openOutputLocation(location, isDirectory: entry.locationIsDirectory);
+  }
+
+  Future<void> openOutputLocation(
+    String location, {
+    required bool isDirectory,
+  }) async {
+    try {
+      if (Platform.isAndroid) {
+        await _channel.invokeMethod<void>('openOutputLocation', {
+          'uri': location,
+          'isDirectory': isDirectory,
+        });
+        return;
+      }
+
+      var target = location;
+      if (isDirectory) {
+        final type = await FileSystemEntity.type(target);
+        if (type == FileSystemEntityType.notFound) {
+          final parent = Directory(target).parent.path;
+          if (await Directory(parent).exists()) target = parent;
+        }
+        await Process.start('explorer.exe', [
+          target,
+        ], mode: ProcessStartMode.detached);
+        return;
+      }
+
+      if (!await File(target).exists()) {
+        final parent = File(target).parent.path;
+        if (await Directory(parent).exists()) {
+          await Process.start('explorer.exe', [
+            parent,
+          ], mode: ProcessStartMode.detached);
+          return;
+        }
+      }
+      await Process.start('explorer.exe', [
+        '/select,',
+        target,
+      ], mode: ProcessStartMode.detached);
+    } catch (error) {
+      throw FileServiceException('打开输出位置失败：$error');
+    }
   }
 
   Future<DefaultExportSelection?> chooseDefaultExport() async {

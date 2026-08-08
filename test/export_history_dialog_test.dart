@@ -59,6 +59,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('导出与撤回记录'), findsOneWidget);
     expect(find.text(r'D:\输出\画集（1）'), findsOneWidget);
+    expect(find.text('打开输出位置'), findsOneWidget);
     expect(find.text('撤回导出'), findsOneWidget);
 
     await tester.tap(find.text('撤回导出'));

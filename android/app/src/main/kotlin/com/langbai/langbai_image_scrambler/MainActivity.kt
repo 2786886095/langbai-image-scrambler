@@ -1,6 +1,7 @@
 package com.langbai.imagescrambler
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -121,6 +122,17 @@ class MainActivity : FlutterActivity() {
             }
             "deleteEmptyDocument" -> runInBackground(result) {
                 deleteEmptyDocument(Uri.parse(call.argument<String>("uri")!!))
+            }
+            "openOutputLocation" -> {
+                try {
+                    openOutputLocation(
+                        Uri.parse(call.argument<String>("uri")!!),
+                        call.argument<Boolean>("isDirectory") ?: false,
+                    )
+                    result.success(null)
+                } catch (error: Throwable) {
+                    result.error("open_output_failed", error.message, null)
+                }
             }
             "saveDocument" -> saveDocument(call, result)
             else -> result.notImplemented()
@@ -492,6 +504,38 @@ class MainActivity : FlutterActivity() {
             null,
         )?.use { it.moveToFirst() } ?: false
         return !hasChildren && DocumentsContract.deleteDocument(contentResolver, uri)
+    }
+
+    private fun openOutputLocation(uri: Uri, isDirectory: Boolean) {
+        if (isDirectory) {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
+                addFlags(
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+                )
+            }
+            startActivity(intent)
+            return
+        }
+
+        val mimeType = contentResolver.getType(uri) ?: "*/*"
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivity(viewIntent)
+        } catch (_: ActivityNotFoundException) {
+            val browseIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = mimeType
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(browseIntent)
+        }
     }
 
     private fun findChild(treeUri: Uri, parentId: String, name: String): Pair<String, String>? {

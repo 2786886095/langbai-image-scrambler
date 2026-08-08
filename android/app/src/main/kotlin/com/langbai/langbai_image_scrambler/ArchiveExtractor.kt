@@ -7,6 +7,7 @@ import net.lingala.zip4j.ZipFile
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import java.io.File
 import java.io.InputStream
+import java.nio.charset.Charset
 import java.util.UUID
 
 internal class ArchiveExtractor(
@@ -96,7 +97,12 @@ internal class ArchiveExtractor(
     }
 
     private fun extractZip(file: File, password: String?, state: ExtractionState) {
-        ZipFile(file, password.orEmpty().toCharArray()).use { archive ->
+        val passwordChars = password.orEmpty().toCharArray()
+        val legacyChineseNames = ZipFile(file, passwordChars).use { probe ->
+            probe.fileHeaders.any { looksLikeCp437Mojibake(it.fileName) }
+        }
+        ZipFile(file, passwordChars).use { archive ->
+            if (legacyChineseNames) archive.charset = Charset.forName("GB18030")
             val headers = archive.fileHeaders
             state.checkEntryCount(headers.size)
             for (header in headers) {
@@ -107,6 +113,12 @@ internal class ArchiveExtractor(
                     state.write(header.fileName, size, input)
                 }
             }
+        }
+    }
+
+    private fun looksLikeCp437Mojibake(name: String): Boolean {
+        return name.any { character ->
+            character == '\uFFFD' || character.code in 0x2500..0x259F
         }
     }
 

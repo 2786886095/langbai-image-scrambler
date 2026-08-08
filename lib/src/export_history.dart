@@ -41,6 +41,8 @@ class ExportHistoryEntry {
     required this.targetLabel,
     required this.artifacts,
     required this.createdDirectories,
+    this.revealLocation,
+    this.revealIsDirectory = false,
     this.undoneAt,
     this.deletedCount = 0,
     this.modifiedSkippedCount = 0,
@@ -55,6 +57,8 @@ class ExportHistoryEntry {
   final String targetLabel;
   final List<ExportArtifact> artifacts;
   final List<String> createdDirectories;
+  final String? revealLocation;
+  final bool revealIsDirectory;
   final DateTime? undoneAt;
   final int deletedCount;
   final int modifiedSkippedCount;
@@ -62,6 +66,17 @@ class ExportHistoryEntry {
   final int failedCount;
 
   bool get canUndo => undoneAt == null && artifacts.isNotEmpty;
+  String? get locationToReveal {
+    final explicit = revealLocation?.trim();
+    if (explicit != null && explicit.isNotEmpty) return explicit;
+    if (createdDirectories.isNotEmpty) return createdDirectories.first;
+    if (artifacts.isNotEmpty) return artifacts.first.location;
+    return null;
+  }
+
+  bool get locationIsDirectory => revealLocation == null
+      ? createdDirectories.isNotEmpty
+      : revealIsDirectory;
 
   ExportHistoryEntry withUndoResult(UndoResult result, DateTime time) =>
       ExportHistoryEntry(
@@ -72,6 +87,8 @@ class ExportHistoryEntry {
         targetLabel: targetLabel,
         artifacts: artifacts,
         createdDirectories: createdDirectories,
+        revealLocation: revealLocation,
+        revealIsDirectory: revealIsDirectory,
         undoneAt: time,
         deletedCount: result.deleted,
         modifiedSkippedCount: result.modified,
@@ -87,6 +104,8 @@ class ExportHistoryEntry {
     'targetLabel': targetLabel,
     'artifacts': artifacts.map((item) => item.toJson()).toList(),
     'createdDirectories': createdDirectories,
+    'revealLocation': revealLocation,
+    'revealIsDirectory': revealIsDirectory,
     'undoneAt': undoneAt?.toIso8601String(),
     'deletedCount': deletedCount,
     'modifiedSkippedCount': modifiedSkippedCount,
@@ -121,6 +140,8 @@ class ExportHistoryEntry {
           (json['createdDirectories'] as List<dynamic>? ?? const [])
               .whereType<String>()
               .toList(growable: false),
+      revealLocation: json['revealLocation'] as String?,
+      revealIsDirectory: json['revealIsDirectory'] as bool? ?? false,
       undoneAt: DateTime.tryParse(json['undoneAt'] as String? ?? ''),
       deletedCount: (json['deletedCount'] as num?)?.toInt() ?? 0,
       modifiedSkippedCount:

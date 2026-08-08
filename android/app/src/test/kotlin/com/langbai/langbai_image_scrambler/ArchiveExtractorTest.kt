@@ -12,6 +12,7 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+import java.nio.charset.Charset
 import java.nio.file.Files
 
 class ArchiveExtractorTest {
@@ -62,6 +63,26 @@ class ArchiveExtractorTest {
         expectPasswordError {
             extractor.extractFromPath(archive.path, archive.name, "wrong")
         }
+    }
+
+    @Test
+    fun legacyGbkZipNamesAreRecoveredWithoutMojibake() {
+        val archive = File(cache, "旧版中文.zip")
+        val novel = File(cache, "source.txt").apply { writeText("正文") }
+        ZipFile(archive).use { zip ->
+            zip.charset = Charset.forName("GB18030")
+            zip.addFile(
+                novel,
+                ZipParameters().apply {
+                    fileNameInZip = "本章/小说（1）.txt"
+                    compressionMethod = CompressionMethod.DEFLATE
+                },
+            )
+        }
+
+        val result = extractor.extractFromPath(archive.path, archive.name, null)
+
+        assertEquals(setOf("本章/小说（1）.txt"), result.items().relativePaths())
     }
 
     @Test

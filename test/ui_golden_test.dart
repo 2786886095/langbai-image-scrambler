@@ -46,6 +46,7 @@ void main() {
     bool openSharedImport = false,
     bool compressionEnabled = false,
     bool openPasswordVault = false,
+    bool scrollWorkspaceDown = false,
     String theme = 'dark',
     String language = 'simplified',
     double textScaleFactor = 1,
@@ -199,6 +200,13 @@ void main() {
       await tester.ensureVisible(find.text('画集A'));
       await tester.pumpAndSettle();
     }
+    if (scrollWorkspaceDown) {
+      await tester.drag(
+        find.byType(SingleChildScrollView).first,
+        const Offset(0, -720),
+      );
+      await tester.pumpAndSettle();
+    }
     if (openHistory) {
       final label = language == 'traditional' ? '匯出記錄' : '导出记录';
       if (size.width < 960) {
@@ -271,6 +279,53 @@ void main() {
       const Size(390, 844),
       'goldens/text_workspace_android.png',
       textWorkspace: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'android TXT workspace lower content',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/text_workspace_android_lower.png',
+      textWorkspace: true,
+      scrollWorkspaceDown: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'small Android TXT workspace lower content',
+    (tester) => render(
+      tester,
+      const Size(360, 640),
+      'goldens/text_workspace_android_360x640_lower.png',
+      textWorkspace: true,
+      scrollWorkspaceDown: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android landscape TXT workspace',
+    (tester) => render(
+      tester,
+      const Size(844, 390),
+      'goldens/text_workspace_android_landscape.png',
+      textWorkspace: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android TXT workspace enlarged text',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/text_workspace_android_large_text.png',
+      textWorkspace: true,
+      textScaleFactor: 1.3,
     ),
     skip: !_runGoldens,
   );

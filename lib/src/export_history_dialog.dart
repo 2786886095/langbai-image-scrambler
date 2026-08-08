@@ -175,6 +175,7 @@ class _HistoryCard extends StatelessWidget {
     final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
     final undoing = controller.undoingHistoryId == entry.id;
+    final opening = controller.openingLocationId == 'history:${entry.id}';
     return Material(
       color: scheme.surfaceContainerHighest.withValues(alpha: 0.22),
       shape: RoundedRectangleBorder(
@@ -265,22 +266,55 @@ class _HistoryCard extends StatelessWidget {
                 ),
               ),
             ],
-            if (entry.canUndo) ...[
+            if (entry.locationToReveal != null || entry.canUndo) ...[
               const SizedBox(height: 13),
               Align(
                 alignment: Alignment.centerRight,
-                child: FilledButton.tonalIcon(
-                  onPressed: undoing || controller.isProcessing
-                      ? null
-                      : () => _confirmUndo(context),
-                  icon: undoing
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.undo_rounded),
-                  label: Text(undoing ? strings['undoing'] : strings['undo']),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    if (entry.locationToReveal != null)
+                      OutlinedButton.icon(
+                        onPressed:
+                            opening || controller.openingLocationId != null
+                            ? null
+                            : () => _openLocation(context),
+                        icon: opening
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.folder_open_outlined),
+                        label: Text(
+                          opening
+                              ? strings['openingOutputLocation']
+                              : strings['openOutputLocation'],
+                        ),
+                      ),
+                    if (entry.canUndo)
+                      FilledButton.tonalIcon(
+                        onPressed: undoing || controller.isProcessing
+                            ? null
+                            : () => _confirmUndo(context),
+                        icon: undoing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.undo_rounded),
+                        label: Text(
+                          undoing ? strings['undoing'] : strings['undo'],
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],
@@ -349,6 +383,17 @@ class _HistoryCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _openLocation(BuildContext context) async {
+    final opened = await context.read<AppController>().openExportLocation(
+      entry,
+    );
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(strings['outputLocationFailed'])));
+    }
   }
 }
 

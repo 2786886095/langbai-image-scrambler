@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'app_controller.dart';
@@ -11,6 +12,7 @@ import 'export_history_dialog.dart';
 import 'models.dart';
 import 'settings_dialog.dart';
 import 'shared_import_dialog.dart';
+import 'text_processor.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -367,6 +369,14 @@ class _Workspace extends StatelessWidget {
                     _WorkspaceTypeSelector(strings: strings),
                     const SizedBox(height: 12),
                     _ModeSelector(strings: strings),
+                    if (controller.workspaceType == WorkspaceType.text) ...[
+                      const SizedBox(height: 16),
+                      _ClipboardBase64Card(
+                        key: ValueKey('clipboard-${controller.mode.name}'),
+                        strings: strings,
+                        mode: controller.mode,
+                      ),
+                    ],
                     const SizedBox(height: 20),
                     LayoutBuilder(
                       builder: (context, constraints) {
@@ -704,6 +714,298 @@ class _ModeSelector extends StatelessWidget {
           minimumSize: const WidgetStatePropertyAll(Size(142, 48)),
           shape: WidgetStatePropertyAll(
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ClipboardBase64Card extends StatefulWidget {
+  const _ClipboardBase64Card({
+    super.key,
+    required this.strings,
+    required this.mode,
+  });
+
+  final AppStrings strings;
+  final ProcessMode mode;
+
+  @override
+  State<_ClipboardBase64Card> createState() => _ClipboardBase64CardState();
+}
+
+class _ClipboardBase64CardState extends State<_ClipboardBase64Card> {
+  final _inputController = TextEditingController();
+  final _outputController = TextEditingController();
+  final _processor = const TextProcessor();
+  bool _processing = false;
+  String? _error;
+
+  bool get _restoring => widget.mode == ProcessMode.restore;
+
+  @override
+  void dispose() {
+    _inputController.dispose();
+    _outputController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _SectionTitle(
+                        icon: Icons.content_paste_go_outlined,
+                        title: widget.strings['clipboardBase64'],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        widget.strings['clipboardBase64Desc'],
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          height: 1.45,
+                          color: scheme.onSurface.withValues(alpha: 0.65),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _processing ? null : _paste,
+                      icon: const Icon(Icons.content_paste_rounded),
+                      label: Text(widget.strings['paste']),
+                    ),
+                    IconButton.outlined(
+                      tooltip: widget.strings['clear'],
+                      onPressed: _processing ? null : _clear,
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final input = _ClipboardTextField(
+                  key: const ValueKey('clipboard-input'),
+                  controller: _inputController,
+                  label: _restoring
+                      ? widget.strings['clipboardBase64Input']
+                      : widget.strings['clipboardPlainInput'],
+                  icon: _restoring
+                      ? Icons.data_object_rounded
+                      : Icons.subject_rounded,
+                  readOnly: false,
+                  onChanged: (_) {
+                    if (_error != null) setState(() => _error = null);
+                  },
+                );
+                final output = _ClipboardTextField(
+                  key: const ValueKey('clipboard-output'),
+                  controller: _outputController,
+                  label: _restoring
+                      ? widget.strings['clipboardRestoredOutput']
+                      : widget.strings['clipboardEncodedOutput'],
+                  icon: Icons.task_alt_rounded,
+                  readOnly: true,
+                );
+                if (constraints.maxWidth >= 760) {
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: input),
+                      const SizedBox(width: 14),
+                      Expanded(child: output),
+                    ],
+                  );
+                }
+                return Column(
+                  children: [input, const SizedBox(height: 12), output],
+                );
+              },
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.error_outline_rounded,
+                    size: 18,
+                    color: scheme.error,
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      _error!,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        height: 1.4,
+                        color: scheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 12),
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _processing || _outputController.text.isEmpty
+                      ? null
+                      : _copy,
+                  icon: const Icon(Icons.content_copy_rounded),
+                  label: Text(widget.strings['copyResult']),
+                ),
+                FilledButton.icon(
+                  key: const ValueKey('clipboard-process'),
+                  onPressed: _processing ? null : _process,
+                  icon: _processing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          _restoring
+                              ? Icons.settings_backup_restore_rounded
+                              : Icons.code_rounded,
+                        ),
+                  label: Text(
+                    _restoring
+                        ? widget.strings['restoreClipboard']
+                        : widget.strings['processClipboard'],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _paste() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (!mounted) return;
+      if (text == null || text.isEmpty) {
+        setState(() => _error = widget.strings['clipboardNoText']);
+        return;
+      }
+      _inputController.text = text;
+      _inputController.selection = TextSelection.collapsed(offset: text.length);
+      setState(() => _error = null);
+      _showMessage(widget.strings['clipboardPasted']);
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    }
+  }
+
+  void _clear() {
+    _inputController.clear();
+    _outputController.clear();
+    setState(() => _error = null);
+  }
+
+  Future<void> _process() async {
+    final input = _inputController.text;
+    if (input.isEmpty) {
+      setState(() => _error = widget.strings['clipboardEmpty']);
+      return;
+    }
+    setState(() {
+      _processing = true;
+      _error = null;
+    });
+    try {
+      final result = _restoring
+          ? await _processor.restoreUtf8Text(input)
+          : await _processor.encodeUtf8Text(input);
+      if (!mounted) return;
+      _outputController.text = result;
+    } on TextProcessingException catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _processing = false);
+    }
+  }
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: _outputController.text));
+    if (mounted) _showMessage(widget.strings['clipboardCopied']);
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _ClipboardTextField extends StatelessWidget {
+  const _ClipboardTextField({
+    super.key,
+    required this.controller,
+    required this.label,
+    required this.icon,
+    required this.readOnly,
+    this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final bool readOnly;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 142,
+      child: TextField(
+        controller: controller,
+        readOnly: readOnly,
+        expands: true,
+        minLines: null,
+        maxLines: null,
+        autocorrect: false,
+        enableSuggestions: false,
+        keyboardType: TextInputType.multiline,
+        textAlignVertical: TextAlignVertical.top,
+        onChanged: onChanged,
+        decoration: InputDecoration(
+          labelText: label,
+          alignLabelWithHint: true,
+          prefixIcon: Padding(
+            padding: const EdgeInsets.only(bottom: 92),
+            child: Icon(icon),
           ),
         ),
       ),
@@ -1954,6 +2256,25 @@ class _QueueCard extends StatelessWidget {
               ),
               const SizedBox(height: 10),
             ],
+            if (controller.canOpenLastRestoreOutput) ...[
+              OutlinedButton.icon(
+                key: const ValueKey('open-last-output'),
+                onPressed: controller.openingLocationId == null
+                    ? controller.openLastRestoreOutput
+                    : null,
+                icon:
+                    controller.openingLocationId ==
+                        'history:${controller.lastExportHistoryId}'
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.folder_open_outlined),
+                label: Text(strings['openOutputLocation']),
+              ),
+              const SizedBox(height: 10),
+            ],
             FilledButton.icon(
               onPressed: controller.isProcessing
                   ? controller.requestStop
@@ -2118,6 +2439,7 @@ class _TaskRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final controller = context.watch<AppController>();
     final scheme = Theme.of(context).colorScheme;
     final textMode = task.workspaceType == WorkspaceType.text;
     final (icon, color, label) = switch (task.status) {
@@ -2201,6 +2523,24 @@ class _TaskRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
+          if (controller.mode == ProcessMode.restore &&
+              task.status == TaskStatus.completed &&
+              task.outputLocation != null) ...[
+            IconButton(
+              tooltip: strings['openOutputLocation'],
+              onPressed: controller.openingLocationId == null
+                  ? () => controller.openTaskOutput(task)
+                  : null,
+              icon: controller.openingLocationId == 'task:${task.id}'
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.folder_open_outlined),
+            ),
+            const SizedBox(width: 2),
+          ],
           Tooltip(
             message: label,
             child: Icon(icon, color: color, size: 21, semanticLabel: label),

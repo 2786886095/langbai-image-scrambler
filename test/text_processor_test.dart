@@ -5,6 +5,27 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:langbai_image_scrambler/src/text_processor.dart';
 
 void main() {
+  test('clipboard UTF-8 text round-trip preserves Unicode exactly', () async {
+    const processor = TextProcessor();
+    const source = '第一章\r\n小番茄与繁體中文 🍅';
+
+    final encoded = await processor.encodeUtf8Text(source);
+    final restored = await processor.restoreUtf8Text(encoded);
+
+    expect(encoded, base64Encode(utf8.encode(source)));
+    expect(restored, source);
+  });
+
+  test('clipboard restore rejects non UTF-8 decoded bytes', () async {
+    const processor = TextProcessor();
+    final encoded = base64Encode([0xff, 0xfe, 0xfd]);
+
+    expect(
+      () => processor.restoreUtf8Text(encoded),
+      throwsA(isA<TextProcessingException>()),
+    );
+  });
+
   test(
     'Base64 round-trip preserves UTF-8 novel bytes and line endings',
     () async {

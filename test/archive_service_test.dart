@@ -52,17 +52,21 @@ void main() {
       format: CompressionArchiveFormat.zip,
       password: 'secret',
     )).single;
+    final zipBytes = File(output.path).readAsBytesSync();
+    expect(_readUint16(zipBytes, 6) & 0x0800, 0x0800);
+    final centralOffset = _indexOfSignature(zipBytes, const [
+      0x50,
+      0x4b,
+      0x01,
+      0x02,
+    ]);
+    expect(centralOffset, greaterThan(0));
+    expect(_readUint16(zipBytes, centralOffset + 8) & 0x0800, 0x0800);
     expect(() {
-      final archive = ZipDecoder().decodeBytes(
-        File(output.path).readAsBytesSync(),
-        password: 'wrong',
-      );
+      final archive = ZipDecoder().decodeBytes(zipBytes, password: 'wrong');
       archive.first.readBytes();
     }, throwsA(anything));
-    final archive = ZipDecoder().decodeBytes(
-      File(output.path).readAsBytesSync(),
-      password: 'secret',
-    );
+    final archive = ZipDecoder().decodeBytes(zipBytes, password: 'secret');
     expect(archive.map((item) => item.name), ['章节一/图一.png', '章节二/图二.png']);
     expect(archive.first.readBytes(), first.readAsBytesSync());
   });
@@ -109,4 +113,21 @@ void main() {
     );
     expect(wrong.exitCode, isNot(0));
   });
+}
+
+int _readUint16(List<int> bytes, int offset) =>
+    bytes[offset] | (bytes[offset + 1] << 8);
+
+int _indexOfSignature(List<int> bytes, List<int> signature) {
+  for (var offset = 0; offset <= bytes.length - signature.length; offset++) {
+    var matches = true;
+    for (var index = 0; index < signature.length; index++) {
+      if (bytes[offset + index] != signature[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return offset;
+  }
+  return -1;
 }
