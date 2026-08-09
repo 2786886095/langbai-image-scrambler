@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:langbai_image_scrambler/src/app_controller.dart';
 import 'package:langbai_image_scrambler/src/app_settings.dart';
 import 'package:langbai_image_scrambler/src/models.dart';
+import 'package:langbai_image_scrambler/src/password_vault.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -58,4 +59,120 @@ void main() {
     expect(reopened.compressionGrouping, CompressionGrouping.combined);
     expect(reopened.selectedArchivePasswordProfileId, 'profile-a');
   });
+  test(
+    'image and TXT keep independent complete profiles across switches and reopening',
+    () async {
+      SharedPreferences.setMockInitialValues({'check_updates': false});
+      final passwordStorage = MemoryPasswordStorage();
+      final passwordVault = await PasswordVault.load(storage: passwordStorage);
+      final imageArchivePassword = await passwordVault.add(
+        name: 'image archive',
+        password: 'image-archive-secret',
+      );
+      final textArchivePassword = await passwordVault.add(
+        name: 'text archive',
+        password: 'text-archive-secret',
+      );
+      final settings = await AppSettings.load();
+      final controller = AppController(settings, passwordVault: passwordVault);
+
+      controller.setAlgorithm(ScrambleAlgorithm.pixelPermutation);
+      controller.setPasswordEnabled(true);
+      controller.setPassword('image-parameter-secret');
+      controller.setManualSeed('24680');
+      await controller.setCompressionEnabled(true);
+      await controller.setCompressionFormat(CompressionArchiveFormat.sevenZip);
+      await controller.setCompressionGrouping(CompressionGrouping.combined);
+      await controller.setArchivePasswordProfile(imageArchivePassword.id);
+
+      controller.setWorkspaceType(WorkspaceType.text);
+      expect(controller.mode, ProcessMode.scramble);
+      expect(controller.compressionEnabled, isFalse);
+      await controller.setCompressionEnabled(true);
+      await controller.setCompressionGrouping(CompressionGrouping.perFile);
+      await controller.setArchivePasswordProfile(textArchivePassword.id);
+      controller.setMode(ProcessMode.restore);
+      await Future<void>.delayed(Duration.zero);
+
+      controller.setWorkspaceType(WorkspaceType.image);
+      expect(controller.mode, ProcessMode.scramble);
+      expect(controller.algorithm, ScrambleAlgorithm.pixelPermutation);
+      expect(controller.passwordEnabled, isTrue);
+      expect(controller.password, 'image-parameter-secret');
+      expect(controller.manualSeed, '24680');
+      expect(controller.compressionEnabled, isTrue);
+      expect(controller.compressionFormat, CompressionArchiveFormat.sevenZip);
+      expect(controller.compressionGrouping, CompressionGrouping.combined);
+      expect(
+        controller.selectedArchivePasswordProfile?.id,
+        imageArchivePassword.id,
+      );
+
+      controller.setWorkspaceType(WorkspaceType.text);
+      expect(controller.mode, ProcessMode.restore);
+      expect(controller.compressionEnabled, isTrue);
+      expect(controller.compressionFormat, CompressionArchiveFormat.zip);
+      expect(controller.compressionGrouping, CompressionGrouping.perFile);
+      expect(
+        controller.selectedArchivePasswordProfile?.id,
+        textArchivePassword.id,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final reopenedVault = await PasswordVault.load(storage: passwordStorage);
+      final reopened = AppController(
+        await AppSettings.load(),
+        passwordVault: reopenedVault,
+      );
+      expect(reopened.workspaceType, WorkspaceType.text);
+      expect(reopened.mode, ProcessMode.restore);
+      expect(reopened.compressionGrouping, CompressionGrouping.perFile);
+      expect(
+        reopened.selectedArchivePasswordProfile?.id,
+        textArchivePassword.id,
+      );
+
+      reopened.setWorkspaceType(WorkspaceType.image);
+      expect(reopened.mode, ProcessMode.scramble);
+      expect(reopened.algorithm, ScrambleAlgorithm.pixelPermutation);
+      expect(reopened.passwordEnabled, isTrue);
+      expect(reopened.password, 'image-parameter-secret');
+      expect(reopened.manualSeed, '24680');
+      expect(reopened.compressionFormat, CompressionArchiveFormat.sevenZip);
+      expect(reopened.compressionGrouping, CompressionGrouping.combined);
+      expect(
+        reopened.selectedArchivePasswordProfile?.id,
+        imageArchivePassword.id,
+      );
+    },
+  );
+
+  test(
+    'legacy global configuration migrates into the last workspace',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'check_updates': false,
+        'last_workspace_type': 'text',
+        'last_process_mode': 'restore',
+        'last_algorithm': 'row_shift',
+        'compression_enabled': true,
+        'compression_format': 'sevenZip',
+        'compression_grouping': 'combined',
+        'selected_archive_password_profile': 'legacy-profile',
+      });
+
+      final settings = await AppSettings.load();
+      final textProfile = settings.profileFor(WorkspaceType.text);
+      final imageProfile = settings.profileFor(WorkspaceType.image);
+      expect(textProfile.mode, ProcessMode.restore);
+      expect(textProfile.algorithm, ScrambleAlgorithm.rowShift);
+      expect(textProfile.compressionEnabled, isTrue);
+      expect(textProfile.compressionFormat, CompressionArchiveFormat.sevenZip);
+      expect(textProfile.compressionGrouping, CompressionGrouping.combined);
+      expect(textProfile.selectedArchivePasswordProfileId, 'legacy-profile');
+      expect(imageProfile.mode, ProcessMode.scramble);
+      expect(imageProfile.algorithm, ScrambleAlgorithm.composite);
+      expect(imageProfile.compressionEnabled, isFalse);
+    },
+  );
 }

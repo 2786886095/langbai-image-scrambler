@@ -62,7 +62,8 @@ void main() {
       'check_updates': false,
       'theme': theme,
       'language': language,
-      'compression_enabled': compressionEnabled,
+      'workspace_${textWorkspace ? 'text' : 'image'}_compression_enabled':
+          compressionEnabled,
     });
     final settings = await AppSettings.load();
     final passwordVault = await PasswordVault.load(

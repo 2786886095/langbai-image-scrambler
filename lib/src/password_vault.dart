@@ -47,19 +47,41 @@ class SecurePasswordStorage implements PasswordStorage {
 }
 
 class PasswordVault extends ChangeNotifier {
-  PasswordVault._(this._storage, this._profiles);
+  PasswordVault._(
+    this._storage,
+    this._profiles, {
+    required this._imageProcessingPassword,
+    required this._imageManualSeed,
+  });
 
   static const storageKey = 'langbai.archive_password_profiles.v1';
+  static const imageProcessingPasswordKey =
+      'langbai.image_processing_password.v1';
+  static const imageManualSeedKey = 'langbai.image_manual_seed.v1';
   final PasswordStorage _storage;
   final List<PasswordProfile> _profiles;
+  String _imageProcessingPassword;
+  String _imageManualSeed;
+  Future<void> _writeTail = Future<void>.value();
 
   List<PasswordProfile> get profiles => List.unmodifiable(_profiles);
+  String get imageProcessingPassword => _imageProcessingPassword;
+  String get imageManualSeed => _imageManualSeed;
 
   static Future<PasswordVault> load({PasswordStorage? storage}) async {
     final backend = storage ?? const SecurePasswordStorage();
     final profiles = <PasswordProfile>[];
+    var imageProcessingPassword = '';
+    var imageManualSeed = '';
     try {
-      final raw = await backend.read(storageKey);
+      final values = await Future.wait([
+        backend.read(storageKey),
+        backend.read(imageProcessingPasswordKey),
+        backend.read(imageManualSeedKey),
+      ]);
+      final raw = values[0];
+      imageProcessingPassword = values[1] ?? '';
+      imageManualSeed = values[2] ?? '';
       if (raw != null && raw.isNotEmpty) {
         for (final item in (jsonDecode(raw) as List<dynamic>)) {
           if (item is! Map) continue;
@@ -76,7 +98,24 @@ class PasswordVault extends ChangeNotifier {
     } catch (_) {
       // A corrupt vault is treated as empty and replaced on the next edit.
     }
-    return PasswordVault._(backend, profiles);
+    return PasswordVault._(
+      backend,
+      profiles,
+      imageProcessingPassword: imageProcessingPassword,
+      imageManualSeed: imageManualSeed,
+    );
+  }
+
+  Future<void> setImageProcessingPassword(String value) async {
+    if (_imageProcessingPassword == value) return;
+    _imageProcessingPassword = value;
+    await _queueWrite(imageProcessingPasswordKey, value.isEmpty ? null : value);
+  }
+
+  Future<void> setImageManualSeed(String value) async {
+    if (_imageManualSeed == value) return;
+    _imageManualSeed = value;
+    await _queueWrite(imageManualSeedKey, value.isEmpty ? null : value);
   }
 
   PasswordProfile? find(String? id) {
@@ -148,10 +187,16 @@ class PasswordVault extends ChangeNotifier {
     return value;
   }
 
-  Future<void> _save() => _storage.write(
+  Future<void> _save() => _queueWrite(
     storageKey,
     jsonEncode(_profiles.map((item) => item.toJson()).toList()),
   );
+
+  Future<void> _queueWrite(String key, String? value) {
+    final operation = _writeTail.then((_) => _storage.write(key, value));
+    _writeTail = operation.then<void>((_) {}, onError: (_) {});
+    return operation;
+  }
 }
 
 class MemoryPasswordStorage implements PasswordStorage {

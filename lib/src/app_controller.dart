@@ -30,16 +30,9 @@ class AppController extends ChangeNotifier {
        _historyStore = historyStore ?? ExportHistoryStore.memory(),
        _archiveService = archiveService ?? ArchiveService() {
     workspaceType = _settings.lastWorkspaceType;
-    mode = _settings.lastProcessMode;
-    algorithm = _settings.lastAlgorithm;
-    if (mode == ProcessMode.scramble && algorithm.isAutomatic) {
-      algorithm = ScrambleAlgorithm.composite;
-    }
-    passwordEnabled =
-        _settings.passwordProtectionEnabled &&
-        workspaceType == WorkspaceType.image &&
-        mode == ProcessMode.scramble &&
-        !algorithm.isCompatibility;
+    _applyWorkspaceProfile(_settings.profileFor(workspaceType));
+    password = _passwordVault?.imageProcessingPassword ?? '';
+    manualSeed = _passwordVault?.imageManualSeed ?? '';
     unawaited(_fileService.initializeSharedImports(_enqueueSharedImport));
   }
 
@@ -111,13 +104,17 @@ class AppController extends ChangeNotifier {
   SharedImportRequest? get pendingSharedImport =>
       _pendingSharedImports.isEmpty ? null : _pendingSharedImports.first;
   bool get hasMixedBatch => batch?.isMixed ?? false;
-  bool get compressionEnabled => _settings.compressionEnabled;
-  CompressionArchiveFormat get compressionFormat => _settings.compressionFormat;
-  CompressionGrouping get compressionGrouping => _settings.compressionGrouping;
+  WorkspaceSettingsProfile get _workspaceProfile =>
+      _settings.profileFor(workspaceType);
+  bool get compressionEnabled => _workspaceProfile.compressionEnabled;
+  CompressionArchiveFormat get compressionFormat =>
+      _workspaceProfile.compressionFormat;
+  CompressionGrouping get compressionGrouping =>
+      _workspaceProfile.compressionGrouping;
   List<PasswordProfile> get archivePasswordProfiles =>
       _passwordVault?.profiles ?? const [];
   PasswordProfile? get selectedArchivePasswordProfile =>
-      _passwordVault?.find(_settings.selectedArchivePasswordProfileId);
+      _passwordVault?.find(_workspaceProfile.selectedArchivePasswordProfileId);
   bool get canUseCompression => mode == ProcessMode.scramble;
 
   void setMode(ProcessMode value) {
@@ -128,8 +125,6 @@ class AppController extends ChangeNotifier {
         ? ScrambleAlgorithm.auto
         : ScrambleAlgorithm.composite;
     passwordEnabled = false;
-    password = '';
-    manualSeed = '';
     lastExportHistoryId = null;
     _resetTaskStates();
     _persistProcessingDefaults();
@@ -145,11 +140,7 @@ class AppController extends ChangeNotifier {
     _discardPendingArchiveExport();
     final temporaryRoots = batch?.temporaryRoots ?? const <String>[];
     workspaceType = value;
-    mode = ProcessMode.scramble;
-    algorithm = ScrambleAlgorithm.composite;
-    passwordEnabled = false;
-    password = '';
-    manualSeed = '';
+    _applyWorkspaceProfile(_settings.profileFor(value));
     batch = null;
     progress = 0;
     statusKey = 'ready';
@@ -174,7 +165,6 @@ class AppController extends ChangeNotifier {
     if (algorithm.isCompatibility || isProcessing) return;
     _discardPendingArchiveExport();
     passwordEnabled = value;
-    if (!value) password = '';
     _persistProcessingDefaults();
     notifyListeners();
   }
@@ -183,6 +173,10 @@ class AppController extends ChangeNotifier {
     final discardedPendingExport = hasPendingArchiveExport;
     _discardPendingArchiveExport();
     password = value;
+    final passwordVault = _passwordVault;
+    if (passwordVault != null) {
+      unawaited(passwordVault.setImageProcessingPassword(value));
+    }
     if (discardedPendingExport) notifyListeners();
   }
 
@@ -190,34 +184,41 @@ class AppController extends ChangeNotifier {
     final discardedPendingExport = hasPendingArchiveExport;
     _discardPendingArchiveExport();
     manualSeed = value;
+    final passwordVault = _passwordVault;
+    if (passwordVault != null) {
+      unawaited(passwordVault.setImageManualSeed(value));
+    }
     if (discardedPendingExport) notifyListeners();
   }
 
   Future<void> setCompressionEnabled(bool value) async {
     if (isProcessing) return;
     _discardPendingArchiveExport();
-    await _settings.setCompressionEnabled(value);
+    await _settings.setCompressionEnabled(value, workspaceType: workspaceType);
     notifyListeners();
   }
 
   Future<void> setCompressionFormat(CompressionArchiveFormat value) async {
     if (isProcessing) return;
     _discardPendingArchiveExport();
-    await _settings.setCompressionFormat(value);
+    await _settings.setCompressionFormat(value, workspaceType: workspaceType);
     notifyListeners();
   }
 
   Future<void> setCompressionGrouping(CompressionGrouping value) async {
     if (isProcessing) return;
     _discardPendingArchiveExport();
-    await _settings.setCompressionGrouping(value);
+    await _settings.setCompressionGrouping(value, workspaceType: workspaceType);
     notifyListeners();
   }
 
   Future<void> setArchivePasswordProfile(String? id) async {
     if (isProcessing) return;
     _discardPendingArchiveExport();
-    await _settings.setSelectedArchivePasswordProfile(id);
+    await _settings.setSelectedArchivePasswordProfile(
+      id,
+      workspaceType: workspaceType,
+    );
     notifyListeners();
   }
 
@@ -241,9 +242,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> deleteArchivePasswordProfile(String id) async {
     await _passwordVault!.delete(id);
-    if (_settings.selectedArchivePasswordProfileId == id) {
-      await _settings.setSelectedArchivePasswordProfile(null);
-    }
+    await _settings.clearArchivePasswordProfileReferences(id);
     notifyListeners();
   }
 
@@ -292,17 +291,22 @@ class AppController extends ChangeNotifier {
         imported.skippedCount > 0 ? '没有可处理的图片或 TXT' : '导入内容为空',
       );
     }
-    mode = selectedMode;
-    algorithm = selectedMode == ProcessMode.restore
-        ? ScrambleAlgorithm.auto
-        : ScrambleAlgorithm.composite;
-    passwordEnabled = false;
-    password = '';
-    manualSeed = '';
     batch = _mergeBatches(batch, imported);
     workspaceType = batch!.containsImages
         ? WorkspaceType.image
         : WorkspaceType.text;
+    final profile = _settings.profileFor(workspaceType);
+    mode = selectedMode;
+    algorithm = selectedMode == ProcessMode.restore
+        ? ScrambleAlgorithm.auto
+        : (profile.algorithm.isAutomatic
+              ? ScrambleAlgorithm.composite
+              : profile.algorithm);
+    passwordEnabled =
+        selectedMode == ProcessMode.scramble &&
+        workspaceType == WorkspaceType.image &&
+        profile.passwordProtectionEnabled &&
+        !algorithm.isCompatibility;
     _resetTaskStates();
     progress = 0;
     statusKey = 'ready';
@@ -1016,6 +1020,19 @@ class AppController extends ChangeNotifier {
         passwordProtectionEnabled: passwordEnabled,
       ),
     );
+  }
+
+  void _applyWorkspaceProfile(WorkspaceSettingsProfile profile) {
+    mode = profile.mode;
+    algorithm = profile.algorithm;
+    if (mode == ProcessMode.scramble && algorithm.isAutomatic) {
+      algorithm = ScrambleAlgorithm.composite;
+    }
+    passwordEnabled =
+        profile.passwordProtectionEnabled &&
+        workspaceType == WorkspaceType.image &&
+        mode == ProcessMode.scramble &&
+        !algorithm.isCompatibility;
   }
 
   String _errorText(Object error) {

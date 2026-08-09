@@ -1215,7 +1215,11 @@ class _ConfigurationCard extends StatelessWidget {
             if (controller.mode == ProcessMode.restore &&
                 controller.algorithm.needsSeed) ...[
               const SizedBox(height: 12),
-              TextField(
+              TextFormField(
+                key: ValueKey(
+                  'manual-seed-${controller.workspaceType.name}-${controller.algorithm.id}',
+                ),
+                initialValue: controller.manualSeed,
                 enabled: !controller.isProcessing,
                 keyboardType: TextInputType.number,
                 onChanged: controller.setManualSeed,
@@ -2097,11 +2101,29 @@ class _PasswordField extends StatefulWidget {
 
 class _PasswordFieldState extends State<_PasswordField> {
   bool _visible = false;
+  final _textController = TextEditingController();
+  final _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
+    if (!_focusNode.hasFocus && _textController.text != controller.password) {
+      _textController.value = TextEditingValue(
+        text: controller.password,
+        selection: TextSelection.collapsed(offset: controller.password.length),
+      );
+    }
     return TextField(
+      key: const ValueKey('image-password-field'),
+      controller: _textController,
+      focusNode: _focusNode,
       enabled: !controller.isProcessing,
       obscureText: !_visible,
       enableSuggestions: false,

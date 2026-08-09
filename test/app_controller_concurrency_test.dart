@@ -101,7 +101,7 @@ void main() {
     () async {
       SharedPreferences.setMockInitialValues({
         'check_updates': false,
-        'compression_enabled': true,
+        'workspace_image_compression_enabled': true,
       });
       final settings = await AppSettings.load();
       final files = _ArchiveOnlyFileService();
@@ -142,7 +142,7 @@ void main() {
     () async {
       SharedPreferences.setMockInitialValues({
         'check_updates': false,
-        'compression_enabled': true,
+        'workspace_text_compression_enabled': true,
       });
       final settings = await AppSettings.load();
       final files = _ArchiveOnlyFileService();
