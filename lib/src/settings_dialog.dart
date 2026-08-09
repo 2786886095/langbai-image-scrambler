@@ -347,35 +347,65 @@ class _SettingsDialog extends StatelessWidget {
                           const SizedBox(height: 8),
                           Align(
                             alignment: Alignment.centerLeft,
-                            child: OutlinedButton.icon(
-                              onPressed: controller.checkingUpdate
-                                  ? null
-                                  : () async {
-                                      final found = await controller
-                                          .checkForUpdates();
-                                      if (!context.mounted) return;
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            found
-                                                ? strings['updateAvailable']
-                                                : strings[controller.statusKey],
+                            child: Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed:
+                                      controller.checkingUpdate ||
+                                          controller.installingUpdate
+                                      ? null
+                                      : () async {
+                                          final found = await controller
+                                              .checkForUpdates();
+                                          if (!context.mounted) return;
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                found
+                                                    ? strings['updateAvailable']
+                                                    : strings[controller
+                                                          .statusKey],
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                  icon: controller.checkingUpdate
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
                                           ),
-                                        ),
-                                      );
-                                    },
-                              icon: controller.checkingUpdate
-                                  ? const SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : const Icon(Icons.refresh_rounded),
-                              label: Text(strings['checkNow']),
+                                        )
+                                      : const Icon(Icons.refresh_rounded),
+                                  label: Text(strings['checkNow']),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: controller.openProjectPage,
+                                  icon: const Icon(Icons.open_in_new_rounded),
+                                  label: Text(strings['githubProject']),
+                                ),
+                                if (controller.availableUpdate != null)
+                                  FilledButton.icon(
+                                    onPressed: controller.canInstallUpdate
+                                        ? controller.installUpdate
+                                        : null,
+                                    icon: controller.installingUpdate
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Icon(Icons.download_rounded),
+                                    label: Text(strings['downloadUpdate']),
+                                  ),
+                              ],
                             ),
                           ),
                         ],

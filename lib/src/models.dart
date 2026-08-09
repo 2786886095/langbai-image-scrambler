@@ -192,6 +192,7 @@ class ExportTarget {
   const ExportTarget({
     this.path,
     this.treeUri,
+    this.documentUri,
     required this.rootFolderName,
     required this.singleFile,
     this.displayLabel = '',
@@ -202,6 +203,7 @@ class ExportTarget {
 
   final String? path;
   final String? treeUri;
+  final String? documentUri;
   final String rootFolderName;
   final bool singleFile;
   final String displayLabel;

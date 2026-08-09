@@ -6,10 +6,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:langbai_image_scrambler/src/app.dart';
 import 'package:langbai_image_scrambler/src/app_controller.dart';
 import 'package:langbai_image_scrambler/src/app_settings.dart';
+import 'package:langbai_image_scrambler/src/archive_service.dart';
 import 'package:langbai_image_scrambler/src/export_history.dart';
+import 'package:langbai_image_scrambler/src/file_service.dart';
+import 'package:langbai_image_scrambler/src/image_processor.dart';
 import 'package:langbai_image_scrambler/src/models.dart';
 import 'package:langbai_image_scrambler/src/password_vault.dart';
 import 'package:langbai_image_scrambler/src/shared_import_dialog.dart';
+import 'package:langbai_image_scrambler/src/update_service.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -45,6 +49,9 @@ void main() {
     bool multiFolderQueue = false,
     bool openSharedImport = false,
     bool compressionEnabled = false,
+    bool pendingArchiveExport = false,
+    bool updateAvailable = false,
+    bool updateDownloading = false,
     bool openPasswordVault = false,
     bool scrollWorkspaceDown = false,
     String theme = 'dark',
@@ -94,6 +101,9 @@ void main() {
     }
     final controller = AppController(
       settings,
+      fileService: pendingArchiveExport ? _PendingGoldenFileService() : null,
+      imageProcessor: pendingArchiveExport ? _GoldenImageProcessor() : null,
+      archiveService: pendingArchiveExport ? _GoldenArchiveService() : null,
       historyStore: history,
       passwordVault: passwordVault,
     );
@@ -110,6 +120,40 @@ void main() {
         isFolder: true,
         rootName: '画集A',
       );
+    }
+    if (pendingArchiveExport) {
+      controller.batch = ImportBatch(
+        tasks: [
+          ImageTask(
+            id: 'pending-image',
+            originalName: '封面.png',
+            relativeDirectory: '',
+            sourceRootName: '',
+          ),
+        ],
+        isFolder: false,
+        rootName: '',
+      );
+      await controller.process();
+      expect(controller.hasPendingArchiveExport, isTrue);
+    }
+    if (updateAvailable || updateDownloading) {
+      controller.availableUpdate = UpdateInfo(
+        currentVersion: '1.2.3',
+        latestVersion: '1.3.0',
+        releaseUrl: Uri.parse('https://github.test/releases/v1.3.0'),
+        downloadUrl: Uri.parse('https://github.test/update.apk'),
+        assetName: 'Langbai-Image-Scrambler-v1.3.0-android.apk',
+        releaseNotes: '更新说明',
+      );
+      if (updateDownloading) {
+        controller.installingUpdate = true;
+        controller.updateProgress = const UpdateProgress(
+          stage: UpdateStage.downloading,
+          receivedBytes: 62,
+          totalBytes: 100,
+        );
+      }
     }
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = size;
@@ -588,6 +632,53 @@ void main() {
     ),
     skip: !_runGoldens,
   );
+
+  testWidgets(
+    'desktop cached archive export retry',
+    (tester) => render(
+      tester,
+      const Size(1440, 900),
+      'goldens/pending_archive_export_desktop.png',
+      compressionEnabled: true,
+      pendingArchiveExport: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android cached archive export retry',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/pending_archive_export_android.png',
+      compressionEnabled: true,
+      pendingArchiveExport: true,
+      scrollWorkspaceDown: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'desktop update available banner',
+    (tester) => render(
+      tester,
+      const Size(1440, 900),
+      'goldens/update_available_desktop.png',
+      updateAvailable: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'Android update download progress',
+    (tester) => render(
+      tester,
+      const Size(390, 844),
+      'goldens/update_downloading_android.png',
+      updateDownloading: true,
+    ),
+    skip: !_runGoldens,
+  );
 }
 
 ImageTask _folderTask(String id, String name, String rootName, String rootId) =>
@@ -598,3 +689,58 @@ ImageTask _folderTask(String id, String name, String rootName, String rootId) =>
       sourceRootName: rootName,
       sourceRootId: rootId,
     );
+
+class _PendingGoldenFileService extends FileService {
+  @override
+  Future<ExportTarget?> chooseArchiveExportTarget({
+    required List<String> fileNames,
+    required AppSettings settings,
+  }) async => const ExportTarget(
+    path: 'golden-output.zip',
+    rootFolderName: '',
+    singleFile: true,
+    displayLabel: 'golden-output.zip',
+  );
+
+  @override
+  Future<Uint8List> readTask(ImageTask task) async => Uint8List.fromList([1]);
+
+  @override
+  Future<String> stageOutputBytes(
+    Uint8List bytes, {
+    String suffix = '.png',
+  }) async => 'golden-stage$suffix';
+
+  @override
+  Future<void> cleanupStagedFiles(Iterable<String> paths) async {}
+
+  @override
+  Future<SaveOutputResult> savePreparedArchive({
+    required String sourcePath,
+    required String fileName,
+    required ExportTarget target,
+  }) async => throw const ExportCancelledException();
+}
+
+class _GoldenImageProcessor extends ImageProcessor {
+  @override
+  Future<ProcessedImage> scramble({
+    required Uint8List inputBytes,
+    required String sourceName,
+    required ScrambleAlgorithm algorithm,
+    String? password,
+  }) async =>
+      ProcessedImage(bytes: inputBytes, algorithm: algorithm, verified: true);
+}
+
+class _GoldenArchiveService extends ArchiveService {
+  @override
+  Future<List<PreparedArchive>> create({
+    required List<ArchiveGroupPlan> groups,
+    required CompressionArchiveFormat format,
+    String? password,
+  }) async => [PreparedArchive(path: 'golden-output.zip', fileName: '封面.zip')];
+
+  @override
+  Future<void> cleanup(List<PreparedArchive> archives) async {}
+}

@@ -478,10 +478,21 @@ class FileService {
     final suggestedName = fileNames.first;
     if (Platform.isAndroid) {
       if (single && settings.askExportEveryTime) {
+        final selected = await _channel
+            .invokeMapMethod<String, dynamic>('pickSaveDocument', {
+              'suggestedName': suggestedName,
+              'mimeType': suggestedName.toLowerCase().endsWith('.zip')
+                  ? 'application/zip'
+                  : 'application/x-7z-compressed',
+            });
+        if (selected == null) return null;
+        final documentUri = selected['uri'] as String?;
+        if (documentUri == null || documentUri.isEmpty) return null;
         return ExportTarget(
+          documentUri: documentUri,
           rootFolderName: '',
           singleFile: true,
-          displayLabel: suggestedName,
+          displayLabel: selected['name'] as String? ?? suggestedName,
         );
       }
       var treeUri = settings.askExportEveryTime
@@ -608,6 +619,14 @@ class FileService {
       final output = await source.copy(outputPath);
       location = output.path;
       displayName = path.basename(output.path);
+    } else if (target.documentUri != null) {
+      final saved = await _channel.invokeMapMethod<String, dynamic>(
+        'writeFileToUri',
+        {'uri': target.documentUri, 'sourcePath': sourcePath},
+      );
+      if (saved == null) throw const FileServiceException('写入导出文件失败');
+      location = saved['uri'] ?? target.documentUri!;
+      displayName = saved['name'] ?? fileName;
     } else if (target.singleFile && target.treeUri == null) {
       final saved = await _channel.invokeMethod<dynamic>('saveDocument', {
         'sourcePath': sourcePath,
@@ -642,6 +661,32 @@ class FileService {
       sizeBytes: await source.length(),
       createdDirectories: createdDirectories,
     );
+  }
+
+  Future<void> cleanupUnusedExportTarget(ExportTarget target) async {
+    try {
+      if (Platform.isAndroid && target.documentUri != null) {
+        await _channel.invokeMethod<bool>('deleteEmptyFile', {
+          'uri': target.documentUri,
+        });
+      }
+    } catch (_) {}
+    final directories = target.createdDirectories.toSet().toList()
+      ..sort((left, right) => right.length.compareTo(left.length));
+    for (final location in directories) {
+      try {
+        if (Platform.isAndroid) {
+          await _channel.invokeMethod<bool>('deleteEmptyDocument', {
+            'uri': location,
+          });
+        } else {
+          final directory = Directory(location);
+          if (await directory.exists() && (await directory.list().isEmpty)) {
+            await directory.delete();
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   Future<ExportTarget?> chooseExportTarget({

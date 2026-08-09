@@ -4,9 +4,12 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -23,11 +26,14 @@ class MainActivity : FlutterActivity() {
         private const val CHANNEL = "com.langbai.imagescrambler/saf"
         private const val REQUEST_TREE = 9401
         private const val REQUEST_SAVE = 9402
+        private const val REQUEST_INSTALL_PERMISSION = 9403
     }
 
     private var pendingTreeResult: MethodChannel.Result? = null
     private var pendingSaveResult: MethodChannel.Result? = null
     private var pendingSaveSourcePath: String? = null
+    private var pendingInstallResult: MethodChannel.Result? = null
+    private var pendingInstallPath: String? = null
     private var platformChannel: MethodChannel? = null
     private val pendingShares = ArrayDeque<Map<String, Any>>()
     private val archiveExtractor by lazy { ArchiveExtractor(cacheDir, contentResolver) }
@@ -123,6 +129,15 @@ class MainActivity : FlutterActivity() {
             "deleteEmptyDocument" -> runInBackground(result) {
                 deleteEmptyDocument(Uri.parse(call.argument<String>("uri")!!))
             }
+            "deleteEmptyFile" -> runInBackground(result) {
+                deleteEmptyFile(Uri.parse(call.argument<String>("uri")!!))
+            }
+            "writeFileToUri" -> runInBackground(result) {
+                val uri = Uri.parse(call.argument<String>("uri")!!)
+                writeFileToUri(uri, call.argument<String>("sourcePath")!!)
+                mapOf("uri" to uri.toString(), "name" to queryDisplayName(uri))
+            }
+            "installApk" -> installApk(call, result)
             "openOutputLocation" -> {
                 try {
                     openOutputLocation(
@@ -134,6 +149,7 @@ class MainActivity : FlutterActivity() {
                     result.error("open_output_failed", error.message, null)
                 }
             }
+            "pickSaveDocument" -> saveDocument(call, result)
             "saveDocument" -> saveDocument(call, result)
             else -> result.notImplemented()
         }
@@ -293,22 +309,24 @@ class MainActivity : FlutterActivity() {
                 pendingSaveResult = null
                 pendingSaveSourcePath = null
                 val uri = data?.data
-                if (resultCode != Activity.RESULT_OK || uri == null || sourcePath == null) {
+                if (resultCode != Activity.RESULT_OK || uri == null) {
                     result?.success(null)
+                    return
+                }
+                val flags = data.flags and
+                    (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                try {
+                    contentResolver.takePersistableUriPermission(uri, flags)
+                } catch (_: SecurityException) {
+                    // The current grant remains usable for this app session.
+                }
+                if (sourcePath == null) {
+                    result?.success(mapOf("uri" to uri.toString(), "name" to queryDisplayName(uri)))
                     return
                 }
                 thread {
                     try {
-                        val flags = data.flags and
-                            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                        try {
-                            contentResolver.takePersistableUriPermission(uri, flags)
-                        } catch (_: SecurityException) {
-                            // The current grant remains usable for this app session.
-                        }
-                        contentResolver.openOutputStream(uri, "wt")!!.use { output ->
-                            File(sourcePath).inputStream().use { input -> input.copyTo(output) }
-                        }
+                        writeFileToUri(uri, sourcePath)
                         runOnUiThread {
                             result?.success(
                                 mapOf(
@@ -322,6 +340,86 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
+            REQUEST_INSTALL_PERMISSION -> {
+                val result = pendingInstallResult
+                val installPath = pendingInstallPath
+                pendingInstallResult = null
+                pendingInstallPath = null
+                if (
+                    installPath != null &&
+                    (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+                        packageManager.canRequestPackageInstalls())
+                ) {
+                    try {
+                        launchApkInstaller(File(installPath))
+                        result?.success(true)
+                    } catch (error: Throwable) {
+                        result?.error("install_failed", error.message, null)
+                    }
+                } else {
+                    result?.success(false)
+                }
+            }
+        }
+    }
+
+    private fun installApk(call: MethodCall, result: MethodChannel.Result) {
+        val packageFile = File(call.argument<String>("path") ?: "")
+        if (!packageFile.exists() || packageFile.length() == 0L) {
+            result.error("missing_apk", "下载的 APK 不存在", null)
+            return
+        }
+        if (pendingInstallResult != null) {
+            result.error("busy", "已有安装请求正在处理", null)
+            return
+        }
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            pendingInstallResult = result
+            pendingInstallPath = packageFile.absolutePath
+            try {
+                startActivityForResult(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName"),
+                    ),
+                    REQUEST_INSTALL_PERMISSION,
+                )
+            } catch (error: Throwable) {
+                pendingInstallResult = null
+                pendingInstallPath = null
+                result.error("install_permission_failed", error.message, null)
+            }
+            return
+        }
+        try {
+            launchApkInstaller(packageFile)
+            result.success(true)
+        } catch (error: Throwable) {
+            result.error("install_failed", error.message, null)
+        }
+    }
+
+    private fun launchApkInstaller(packageFile: File) {
+        val uri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            packageFile,
+        )
+        startActivity(
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+        )
+    }
+
+    private fun writeFileToUri(uri: Uri, sourcePath: String) {
+        contentResolver.openOutputStream(uri, "wt")!!.use { output ->
+            File(sourcePath).inputStream().use { input -> input.copyTo(output) }
         }
     }
 
@@ -504,6 +602,23 @@ class MainActivity : FlutterActivity() {
             null,
         )?.use { it.moveToFirst() } ?: false
         return !hasChildren && DocumentsContract.deleteDocument(contentResolver, uri)
+    }
+
+    private fun deleteEmptyFile(uri: Uri): Boolean {
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            OpenableColumns.SIZE,
+        )
+        val values = contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            val mime = cursor.getString(0)
+            val size = if (cursor.isNull(1)) null else cursor.getLong(1)
+            mime to size
+        } ?: return false
+        if (values.first == DocumentsContract.Document.MIME_TYPE_DIR || values.second != 0L) {
+            return false
+        }
+        return DocumentsContract.deleteDocument(contentResolver, uri)
     }
 
     private fun openOutputLocation(uri: Uri, isDirectory: Boolean) {

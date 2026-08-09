@@ -43,6 +43,23 @@ class ArchiveService {
   final String? windows7zrPath;
   final Directory? _temporaryRoot;
 
+  List<String> plannedFileNames({
+    required List<ImageTask> tasks,
+    required CompressionGrouping grouping,
+    required CompressionArchiveFormat format,
+    DateTime? now,
+  }) {
+    final placeholderPaths = <String, String>{
+      for (final task in tasks) task.id: task.id,
+    };
+    return plan(
+      tasks: tasks,
+      stagedPaths: placeholderPaths,
+      grouping: grouping,
+      now: now,
+    ).map((group) => '${group.baseName}.${format.extension}').toList();
+  }
+
   List<ArchiveGroupPlan> plan({
     required List<ImageTask> tasks,
     required Map<String, String> stagedPaths,

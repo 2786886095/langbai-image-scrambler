@@ -180,11 +180,103 @@ void main() {
       expect(history.entries.single.artifacts.single.displayName, '正文.zip');
     },
   );
+
+  test(
+    'compression export target is selected before image processing',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'check_updates': false,
+        'compression_enabled': true,
+      });
+      final settings = await AppSettings.load();
+      final processor = _ConcurrentImageProcessor();
+      final files = _CancelledArchiveTargetFileService();
+      final archives = _MemoryArchiveService();
+      final controller = AppController(
+        settings,
+        fileService: files,
+        imageProcessor: processor,
+        archiveService: archives,
+      );
+      controller.batch = ImportBatch(
+        tasks: [
+          ImageTask(
+            id: '1',
+            originalName: '原图.jpg',
+            relativeDirectory: '',
+            sourceRootName: '',
+          ),
+        ],
+        isFolder: false,
+        rootName: '',
+      );
+
+      await controller.process();
+
+      expect(files.chooseCalls, 1);
+      expect(processor.calls, 0);
+      expect(archives.createCalls, 0);
+      expect(controller.statusKey, 'exportCancelled');
+    },
+  );
+
+  test(
+    'cancelled archive save is cached and retry does not regenerate',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'check_updates': false,
+        'compression_enabled': true,
+      });
+      final settings = await AppSettings.load();
+      final processor = _ConcurrentImageProcessor();
+      final files = _RetryArchiveFileService();
+      final archives = _MemoryArchiveService();
+      final history = ExportHistoryStore.memory();
+      final controller = AppController(
+        settings,
+        fileService: files,
+        imageProcessor: processor,
+        archiveService: archives,
+        historyStore: history,
+      );
+      controller.batch = ImportBatch(
+        tasks: [
+          ImageTask(
+            id: '1',
+            originalName: '原图.jpg',
+            relativeDirectory: '',
+            sourceRootName: '',
+          ),
+        ],
+        isFolder: false,
+        rootName: '',
+      );
+
+      await controller.process();
+
+      expect(controller.hasPendingArchiveExport, isTrue);
+      expect(controller.statusKey, 'exportPending');
+      expect(processor.calls, 1);
+      expect(archives.createCalls, 1);
+      expect(history.entries, isEmpty);
+
+      await controller.process();
+
+      expect(controller.hasPendingArchiveExport, isFalse);
+      expect(controller.statusKey, 'allCompleted');
+      expect(processor.calls, 1);
+      expect(archives.createCalls, 1);
+      expect(files.saveAttempts, 2);
+      expect(history.entries, hasLength(1));
+      expect(archives.cleanedFileNames, contains('原图.zip'));
+    },
+  );
 }
 
 class _ConcurrentImageProcessor extends ImageProcessor {
   int active = 0;
   int maxActive = 0;
+  int calls = 0;
 
   @override
   Future<ProcessedImage> scramble({
@@ -193,6 +285,7 @@ class _ConcurrentImageProcessor extends ImageProcessor {
     required ScrambleAlgorithm algorithm,
     String? password,
   }) async {
+    calls++;
     active++;
     if (active > maxActive) maxActive = active;
     await Future<void>.delayed(const Duration(milliseconds: 35));
@@ -321,23 +414,61 @@ class _ArchiveOnlyFileService extends FileService {
   }
 }
 
+class _CancelledArchiveTargetFileService extends _ArchiveOnlyFileService {
+  int chooseCalls = 0;
+
+  @override
+  Future<ExportTarget?> chooseArchiveExportTarget({
+    required List<String> fileNames,
+    required AppSettings settings,
+  }) async {
+    chooseCalls++;
+    return null;
+  }
+}
+
+class _RetryArchiveFileService extends _ArchiveOnlyFileService {
+  int saveAttempts = 0;
+
+  @override
+  Future<SaveOutputResult> savePreparedArchive({
+    required String sourcePath,
+    required String fileName,
+    required ExportTarget target,
+  }) async {
+    saveAttempts++;
+    if (saveAttempts == 1) throw const ExportCancelledException();
+    return super.savePreparedArchive(
+      sourcePath: sourcePath,
+      fileName: fileName,
+      target: target,
+    );
+  }
+}
+
 class _MemoryArchiveService extends ArchiveService {
   bool cleaned = false;
+  int createCalls = 0;
+  final List<String> cleanedFileNames = [];
 
   @override
   Future<List<PreparedArchive>> create({
     required List<ArchiveGroupPlan> groups,
     required CompressionArchiveFormat format,
     String? password,
-  }) async => [
-    PreparedArchive(
-      path: 'memory/archive.zip',
-      fileName: '${groups.single.baseName}.zip',
-    ),
-  ];
+  }) async {
+    createCalls++;
+    return [
+      PreparedArchive(
+        path: 'memory/archive.zip',
+        fileName: '${groups.single.baseName}.zip',
+      ),
+    ];
+  }
 
   @override
   Future<void> cleanup(List<PreparedArchive> archives) async {
-    cleaned = true;
+    if (archives.isNotEmpty) cleaned = true;
+    cleanedFileNames.addAll(archives.map((item) => item.fileName));
   }
 }

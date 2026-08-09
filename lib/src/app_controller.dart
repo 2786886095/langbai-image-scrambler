@@ -66,11 +66,16 @@ class AppController extends ChangeNotifier {
   String? detailMessage;
   UpdateInfo? availableUpdate;
   bool checkingUpdate = false;
+  bool installingUpdate = false;
+  UpdateProgress? updateProgress;
+  String? updateError;
   String? undoingHistoryId;
   String? openingLocationId;
   String? lastExportHistoryId;
   bool detailMessageIsError = false;
   final List<SharedImportRequest> _pendingSharedImports = [];
+  final List<PreparedArchive> _pendingPreparedArchives = [];
+  ExportTarget? _pendingArchiveTarget;
 
   List<ImageTask> get tasks => batch?.tasks ?? const [];
   int get completedCount =>
@@ -78,7 +83,13 @@ class AppController extends ChangeNotifier {
   int get failedCount =>
       tasks.where((task) => task.status == TaskStatus.failed).length;
   bool get hasFailed => failedCount > 0;
+  bool get hasPendingArchiveExport => _pendingPreparedArchives.isNotEmpty;
   bool get canStart => tasks.isNotEmpty && !isProcessing;
+  bool get canInstallUpdate =>
+      availableUpdate != null &&
+      !installingUpdate &&
+      !isProcessing &&
+      !hasPendingArchiveExport;
   FileService get fileService => _fileService;
   List<ExportHistoryEntry> get exportHistory => _historyStore.entries;
   ExportHistoryEntry? get lastExportEntry {
@@ -111,6 +122,7 @@ class AppController extends ChangeNotifier {
 
   void setMode(ProcessMode value) {
     if (isProcessing || mode == value) return;
+    _discardPendingArchiveExport();
     mode = value;
     algorithm = value == ProcessMode.restore
         ? ScrambleAlgorithm.auto
@@ -130,6 +142,7 @@ class AppController extends ChangeNotifier {
         workspaceType == value) {
       return;
     }
+    _discardPendingArchiveExport();
     final temporaryRoots = batch?.temporaryRoots ?? const <String>[];
     workspaceType = value;
     mode = ProcessMode.scramble;
@@ -150,6 +163,7 @@ class AppController extends ChangeNotifier {
 
   void setAlgorithm(ScrambleAlgorithm value) {
     if (isProcessing || algorithm == value) return;
+    _discardPendingArchiveExport();
     algorithm = value;
     if (value.isCompatibility) passwordEnabled = false;
     _persistProcessingDefaults();
@@ -158,35 +172,51 @@ class AppController extends ChangeNotifier {
 
   void setPasswordEnabled(bool value) {
     if (algorithm.isCompatibility || isProcessing) return;
+    _discardPendingArchiveExport();
     passwordEnabled = value;
     if (!value) password = '';
     _persistProcessingDefaults();
     notifyListeners();
   }
 
-  void setPassword(String value) => password = value;
-  void setManualSeed(String value) => manualSeed = value;
+  void setPassword(String value) {
+    final discardedPendingExport = hasPendingArchiveExport;
+    _discardPendingArchiveExport();
+    password = value;
+    if (discardedPendingExport) notifyListeners();
+  }
+
+  void setManualSeed(String value) {
+    final discardedPendingExport = hasPendingArchiveExport;
+    _discardPendingArchiveExport();
+    manualSeed = value;
+    if (discardedPendingExport) notifyListeners();
+  }
 
   Future<void> setCompressionEnabled(bool value) async {
     if (isProcessing) return;
+    _discardPendingArchiveExport();
     await _settings.setCompressionEnabled(value);
     notifyListeners();
   }
 
   Future<void> setCompressionFormat(CompressionArchiveFormat value) async {
     if (isProcessing) return;
+    _discardPendingArchiveExport();
     await _settings.setCompressionFormat(value);
     notifyListeners();
   }
 
   Future<void> setCompressionGrouping(CompressionGrouping value) async {
     if (isProcessing) return;
+    _discardPendingArchiveExport();
     await _settings.setCompressionGrouping(value);
     notifyListeners();
   }
 
   Future<void> setArchivePasswordProfile(String? id) async {
     if (isProcessing) return;
+    _discardPendingArchiveExport();
     await _settings.setSelectedArchivePasswordProfile(id);
     notifyListeners();
   }
@@ -305,6 +335,7 @@ class AppController extends ChangeNotifier {
     try {
       final imported = await action();
       if (imported == null) return;
+      _discardPendingArchiveExport();
       batch = _mergeBatches(batch, imported);
       progress = 0;
       lastExportHistoryId = null;
@@ -322,6 +353,7 @@ class AppController extends ChangeNotifier {
 
   void clear() {
     if (isProcessing) return;
+    _discardPendingArchiveExport();
     final temporaryRoots = batch?.temporaryRoots ?? const <String>[];
     batch = null;
     progress = 0;
@@ -340,6 +372,7 @@ class AppController extends ChangeNotifier {
         .map((task) => task.copyForRetry())
         .toList();
     if (retry.isEmpty) return;
+    _discardPendingArchiveExport();
     batch = ImportBatch(
       tasks: retry,
       isFolder: batch!.isFolder,
@@ -436,6 +469,10 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> process() async {
+    if (hasPendingArchiveExport) {
+      await continuePendingArchiveExport();
+      return;
+    }
     if (!canStart || batch == null) {
       statusKey = 'selectFirst';
       notifyListeners();
@@ -463,7 +500,21 @@ class AppController extends ChangeNotifier {
 
     if (compressionEnabled && canUseCompression) {
       lastExportHistoryId = null;
-      await _processCompressed(parsedSeed);
+      final plannedFileNames = _archiveService.plannedFileNames(
+        tasks: tasks,
+        grouping: compressionGrouping,
+        format: compressionFormat,
+      );
+      final target = await _fileService.chooseArchiveExportTarget(
+        fileNames: plannedFileNames,
+        settings: _settings,
+      );
+      if (target == null) {
+        statusKey = 'exportCancelled';
+        notifyListeners();
+        return;
+      }
+      await _processCompressed(parsedSeed, target);
       return;
     }
 
@@ -571,7 +622,7 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _processCompressed(int? parsedSeed) async {
+  Future<void> _processCompressed(int? parsedSeed, ExportTarget target) async {
     isProcessing = true;
     stopRequested = false;
     detailMessage = null;
@@ -582,9 +633,10 @@ class AppController extends ChangeNotifier {
 
     final stagedPaths = <String, String>{};
     final prepared = <PreparedArchive>[];
+    final remaining = <PreparedArchive>[];
     final outputs = <SaveOutputResult>[];
-    ExportTarget? target;
     var historyRecorded = false;
+    var keepPrepared = false;
     var nextIndex = 0;
     var finishedCount = 0;
     try {
@@ -646,15 +698,10 @@ class AppController extends ChangeNotifier {
         ),
       );
       progress = 0.92;
-      target = await _fileService.chooseArchiveExportTarget(
-        fileNames: prepared.map((item) => item.fileName).toList(),
-        settings: _settings,
-      );
-      if (target == null) {
-        statusKey = 'exportCancelled';
-        return;
-      }
-      for (final archive in prepared) {
+      remaining
+        ..clear()
+        ..addAll(prepared);
+      for (final archive in List<PreparedArchive>.of(remaining)) {
         outputs.add(
           await _fileService.savePreparedArchive(
             sourcePath: archive.path,
@@ -662,6 +709,7 @@ class AppController extends ChangeNotifier {
             target: target,
           ),
         );
+        remaining.remove(archive);
       }
       progress = 1;
       await _recordHistory(outputs, target);
@@ -676,25 +724,117 @@ class AppController extends ChangeNotifier {
       final cancelled = error is ExportCancelledException;
       detailMessage = cancelled ? null : _errorText(error);
       detailMessageIsError = !cancelled;
-      statusKey = cancelled ? 'exportCancelled' : 'partialCompleted';
-      if (!historyRecorded && outputs.isNotEmpty && target != null) {
+      if (remaining.isNotEmpty) {
+        _pendingPreparedArchives
+          ..clear()
+          ..addAll(remaining);
+        _pendingArchiveTarget = target;
+        keepPrepared = true;
+        statusKey = cancelled ? 'exportPending' : 'exportPendingFailed';
+      } else {
+        statusKey = cancelled ? 'exportCancelled' : 'partialCompleted';
+        if (!cancelled && outputs.isEmpty) {
+          for (final task in tasks.where(
+            (item) => item.status == TaskStatus.completed,
+          )) {
+            task.status = TaskStatus.failed;
+            task.error = detailMessage;
+          }
+        }
+      }
+      if (!historyRecorded && outputs.isNotEmpty) {
         try {
           await _recordHistory(outputs, target);
         } catch (_) {}
       }
-      if (!cancelled) {
-        for (final task in tasks.where(
-          (item) => item.status == TaskStatus.completed,
-        )) {
-          task.status = TaskStatus.failed;
-          task.error = detailMessage;
-        }
-      }
     } finally {
       await _fileService.cleanupStagedFiles(stagedPaths.values);
-      await _archiveService.cleanup(prepared);
+      final disposable = keepPrepared
+          ? prepared
+                .where((item) => !_pendingPreparedArchives.contains(item))
+                .toList(growable: false)
+          : prepared;
+      await _archiveService.cleanup(disposable);
+      if (outputs.isEmpty && !keepPrepared) {
+        await _fileService.cleanupUnusedExportTarget(target);
+      }
       isProcessing = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> continuePendingArchiveExport() async {
+    if (isProcessing || _pendingPreparedArchives.isEmpty) return;
+    final target = _pendingArchiveTarget;
+    if (target == null) return;
+    isProcessing = true;
+    stopRequested = false;
+    detailMessage = null;
+    detailMessageIsError = false;
+    statusKey = 'exportingCached';
+    progress = 0.92;
+    notifyListeners();
+
+    final pending = List<PreparedArchive>.of(_pendingPreparedArchives);
+    final exported = <PreparedArchive>[];
+    final outputs = <SaveOutputResult>[];
+    try {
+      for (var index = 0; index < pending.length; index++) {
+        final archive = pending[index];
+        outputs.add(
+          await _fileService.savePreparedArchive(
+            sourcePath: archive.path,
+            fileName: archive.fileName,
+            target: target,
+          ),
+        );
+        exported.add(archive);
+        _pendingPreparedArchives.remove(archive);
+        progress = 0.92 + (0.08 * exported.length / pending.length);
+        notifyListeners();
+      }
+      await _recordHistory(outputs, target);
+      for (final task in tasks.where(
+        (item) => item.status == TaskStatus.completed,
+      )) {
+        task.outputLocation = target.displayLabel;
+      }
+      _pendingArchiveTarget = null;
+      progress = 1;
+      statusKey = failedCount == 0 ? 'allCompleted' : 'partialCompleted';
+    } catch (error) {
+      final cancelled = error is ExportCancelledException;
+      detailMessage = cancelled ? null : _errorText(error);
+      detailMessageIsError = !cancelled;
+      statusKey = cancelled ? 'exportPending' : 'exportPendingFailed';
+      if (outputs.isNotEmpty) {
+        try {
+          await _recordHistory(outputs, target);
+        } catch (_) {}
+      }
+    } finally {
+      await _archiveService.cleanup(exported);
+      isProcessing = false;
+      notifyListeners();
+    }
+  }
+
+  void _discardPendingArchiveExport() {
+    if (_pendingPreparedArchives.isEmpty && _pendingArchiveTarget == null) {
+      return;
+    }
+    final archives = List<PreparedArchive>.of(_pendingPreparedArchives);
+    final target = _pendingArchiveTarget;
+    _pendingPreparedArchives.clear();
+    _pendingArchiveTarget = null;
+    progress = 0;
+    statusKey = 'ready';
+    detailMessage = null;
+    detailMessageIsError = false;
+    _resetTaskStates();
+    if (archives.isNotEmpty) unawaited(_archiveService.cleanup(archives));
+    if (target != null) {
+      unawaited(_fileService.cleanupUnusedExportTarget(target));
     }
   }
 
@@ -811,13 +951,50 @@ class AppController extends ChangeNotifier {
     return availableUpdate != null;
   }
 
-  Future<void> openUpdate() async {
+  Future<void> installUpdate() async {
     final update = availableUpdate;
-    if (update != null) await _updateService.open(update);
+    if (update == null || !canInstallUpdate) return;
+    installingUpdate = true;
+    updateProgress = const UpdateProgress(stage: UpdateStage.downloading);
+    updateError = null;
+    notifyListeners();
+    try {
+      await _updateService.downloadAndInstall(
+        update,
+        onProgress: (value) {
+          updateProgress = value;
+          notifyListeners();
+        },
+      );
+      statusKey = 'updateInstallerOpened';
+    } catch (error) {
+      updateError = error is UpdateException
+          ? error.message
+          : error.toString().replaceFirst('Exception: ', '');
+      statusKey = 'updateInstallFailed';
+    } finally {
+      installingUpdate = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> openProjectPage() async {
+    try {
+      await _updateService.openProjectPage();
+    } catch (error) {
+      detailMessage = error is UpdateException
+          ? error.message
+          : error.toString().replaceFirst('Exception: ', '');
+      detailMessageIsError = true;
+      notifyListeners();
+    }
   }
 
   void dismissUpdate() {
+    if (installingUpdate) return;
     availableUpdate = null;
+    updateProgress = null;
+    updateError = null;
     notifyListeners();
   }
 
@@ -847,5 +1024,11 @@ class AppController extends ChangeNotifier {
     if (error is TextProcessingException) return error.message;
     if (error is ArchiveCreationException) return error.message;
     return error.toString().replaceFirst('Exception: ', '');
+  }
+
+  @override
+  void dispose() {
+    _discardPendingArchiveExport();
+    super.dispose();
   }
 }

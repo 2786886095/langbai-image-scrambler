@@ -1,10 +1,35 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app_version.dart';
+
+enum UpdatePlatform { windows, android }
+
+enum UpdateStage { downloading, verifying, installing }
+
+class UpdateProgress {
+  const UpdateProgress({
+    required this.stage,
+    this.receivedBytes = 0,
+    this.totalBytes,
+  });
+
+  final UpdateStage stage;
+  final int receivedBytes;
+  final int? totalBytes;
+
+  double? get fraction {
+    final total = totalBytes;
+    if (total == null || total <= 0) return null;
+    return (receivedBytes / total).clamp(0, 1);
+  }
+}
 
 class UpdateInfo {
   const UpdateInfo({
@@ -12,29 +37,60 @@ class UpdateInfo {
     required this.latestVersion,
     required this.releaseUrl,
     required this.downloadUrl,
+    required this.assetName,
     required this.releaseNotes,
+    this.sha256Digest,
+    this.checksumUrl,
   });
 
   final String currentVersion;
   final String latestVersion;
   final Uri releaseUrl;
   final Uri downloadUrl;
+  final String assetName;
   final String releaseNotes;
+  final String? sha256Digest;
+  final Uri? checksumUrl;
 }
 
+typedef UpdateInstaller = Future<void> Function(File package);
+
 class UpdateService {
+  UpdateService({
+    http.Client? client,
+    UpdatePlatform? platform,
+    this.installerOverride,
+    MethodChannel? channel,
+  }) : _client = client ?? http.Client(),
+       _platform =
+           platform ??
+           (Platform.isAndroid
+               ? UpdatePlatform.android
+               : UpdatePlatform.windows),
+       _channel =
+           channel ?? const MethodChannel('com.langbai.imagescrambler/saf');
+
   static const repository = '2786886095/langbai-image-scrambler';
+  static final projectUrl = Uri.parse('https://github.com/$repository');
+
+  final http.Client _client;
+  final UpdatePlatform _platform;
+  final UpdateInstaller? installerOverride;
+  final MethodChannel _channel;
+
+  static const _headers = {
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'Langbai-Image-Scrambler-Updater',
+  };
 
   Future<UpdateInfo?> check() async {
-    final response = await http
+    final response = await _client
         .get(
           Uri.parse('https://api.github.com/repos/$repository/releases/latest'),
-          headers: const {
-            'Accept': 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
+          headers: _headers,
         )
-        .timeout(const Duration(seconds: 12));
+        .timeout(const Duration(seconds: 15));
     if (response.statusCode == 404) return null;
     if (response.statusCode != 200) {
       throw UpdateException('GitHub API ${response.statusCode}');
@@ -45,33 +101,212 @@ class UpdateService {
       return null;
     }
     final assets = (data['assets'] as List<dynamic>? ?? const [])
-        .cast<Map<String, dynamic>>();
-    final preferredExtension = Platform.isAndroid ? '.apk' : '.exe';
-    final preferred = assets.where(
-      (asset) => (asset['name'] as String? ?? '').toLowerCase().endsWith(
-        preferredExtension,
-      ),
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
+    final preferred = assets.where(_isPlatformPackage).toList(growable: false);
+    if (preferred.isEmpty) {
+      throw const UpdateException('新版本缺少当前平台安装包');
+    }
+    final asset = preferred.first;
+    final assetName = asset['name'] as String? ?? '';
+    final downloadUrl = asset['browser_download_url'] as String?;
+    if (assetName.isEmpty || downloadUrl == null || downloadUrl.isEmpty) {
+      throw const UpdateException('新版本安装包信息不完整');
+    }
+    final digest = _normalizeDigest(asset['digest'] as String?);
+    final checksumAsset = assets.where(
+      (item) =>
+          (item['name'] as String? ?? '').toUpperCase() == 'SHA256SUMS.TXT',
     );
-    final download = preferred.isNotEmpty
-        ? preferred.first['browser_download_url'] as String
-        : data['html_url'] as String;
+    final checksumDownload = checksumAsset.isEmpty
+        ? null
+        : checksumAsset.first['browser_download_url'] as String?;
     return UpdateInfo(
       currentVersion: AppVersion.current,
       latestVersion: latest,
       releaseUrl: Uri.parse(data['html_url'] as String),
-      downloadUrl: Uri.parse(download),
+      downloadUrl: Uri.parse(downloadUrl),
+      assetName: assetName,
       releaseNotes: data['body'] as String? ?? '',
+      sha256Digest: digest,
+      checksumUrl: checksumDownload == null
+          ? null
+          : Uri.parse(checksumDownload),
     );
   }
 
-  Future<void> open(UpdateInfo info) async {
+  Future<void> downloadAndInstall(
+    UpdateInfo info, {
+    void Function(UpdateProgress progress)? onProgress,
+  }) async {
+    final root = await Directory.systemTemp.createTemp('langbai-update-');
+    final safeName = path
+        .basename(info.assetName)
+        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_');
+    final package = File(path.join(root.path, safeName));
+    try {
+      final request = http.Request('GET', info.downloadUrl)
+        ..headers.addAll(_headers);
+      final response = await _client
+          .send(request)
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode != 200) {
+        throw UpdateException('下载安装包失败：HTTP ${response.statusCode}');
+      }
+      final total = response.contentLength;
+      var received = 0;
+      final sink = package.openWrite();
+      try {
+        await for (final chunk in response.stream) {
+          sink.add(chunk);
+          received += chunk.length;
+          onProgress?.call(
+            UpdateProgress(
+              stage: UpdateStage.downloading,
+              receivedBytes: received,
+              totalBytes: total,
+            ),
+          );
+        }
+      } finally {
+        await sink.close();
+      }
+      if (!await package.exists() || await package.length() == 0) {
+        throw const UpdateException('下载的安装包为空');
+      }
+
+      onProgress?.call(const UpdateProgress(stage: UpdateStage.verifying));
+      final expected =
+          info.sha256Digest ??
+          await _checksumFromManifest(info, asset: safeName);
+      if (expected == null) {
+        throw const UpdateException('发布页缺少安装包 SHA-256 校验值');
+      }
+      final actual = (await sha256.bind(package.openRead()).first).toString();
+      if (actual.toLowerCase() != expected.toLowerCase()) {
+        throw const UpdateException('安装包校验失败，请重新下载');
+      }
+
+      onProgress?.call(const UpdateProgress(stage: UpdateStage.installing));
+      final installer = installerOverride;
+      if (installer != null) {
+        await installer(package);
+      } else if (_platform == UpdatePlatform.android) {
+        await _installAndroid(package);
+      } else {
+        await _installWindows(package);
+      }
+    } catch (_) {
+      try {
+        if (await root.exists()) await root.delete(recursive: true);
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
+  Future<void> openProjectPage() async {
     final opened = await launchUrl(
-      info.downloadUrl,
+      projectUrl,
       mode: LaunchMode.externalApplication,
     );
-    if (!opened) {
-      await launchUrl(info.releaseUrl, mode: LaunchMode.externalApplication);
+    if (!opened) throw const UpdateException('打开 GitHub 项目主页失败');
+  }
+
+  Future<String?> _checksumFromManifest(
+    UpdateInfo info, {
+    required String asset,
+  }) async {
+    final url = info.checksumUrl;
+    if (url == null) return null;
+    final response = await _client
+        .get(url, headers: _headers)
+        .timeout(const Duration(seconds: 12));
+    if (response.statusCode != 200) return null;
+    for (final line in const LineSplitter().convert(response.body)) {
+      final match = RegExp(
+        r'^([0-9a-fA-F]{64})\s+\*?(.+)$',
+      ).firstMatch(line.trim());
+      if (match != null && match.group(2)!.trim() == asset) {
+        return match.group(1)!.toLowerCase();
+      }
     }
+    return null;
+  }
+
+  Future<void> _installAndroid(File package) async {
+    final started = await _channel.invokeMethod<bool>('installApk', {
+      'path': package.path,
+    });
+    if (started != true) {
+      throw const UpdateException('需要允许安装此来源的应用后继续更新');
+    }
+  }
+
+  Future<void> _installWindows(File package) async {
+    final currentExe = Platform.resolvedExecutable;
+    final installDir = path.dirname(currentExe);
+    final script = File(path.join(package.parent.path, 'install-update.ps1'));
+    await script.writeAsString(r'''
+param(
+  [Parameter(Mandatory=$true)][string]$Installer,
+  [Parameter(Mandatory=$true)][int]$AppPid,
+  [Parameter(Mandatory=$true)][string]$InstallDir,
+  [Parameter(Mandatory=$true)][string]$AppExe
+)
+$ErrorActionPreference = 'Stop'
+$scriptPath = $MyInvocation.MyCommand.Path
+try { Wait-Process -Id $AppPid -ErrorAction SilentlyContinue } catch {}
+$arguments = @(
+  '/VERYSILENT',
+  '/SUPPRESSMSGBOXES',
+  '/NORESTART',
+  '/CLOSEAPPLICATIONS',
+  "/DIR=`"$InstallDir`""
+)
+$installed = Start-Process -FilePath $Installer -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+if ($installed.ExitCode -eq 0 -and (Test-Path -LiteralPath $AppExe)) {
+  Start-Process -FilePath $AppExe -WorkingDirectory $InstallDir
+}
+Start-Sleep -Milliseconds 500
+Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
+''', flush: true);
+    await Process.start('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-WindowStyle',
+      'Hidden',
+      '-File',
+      script.path,
+      '-Installer',
+      package.path,
+      '-AppPid',
+      pid.toString(),
+      '-InstallDir',
+      installDir,
+      '-AppExe',
+      currentExe,
+    ], mode: ProcessStartMode.detached);
+    exit(0);
+  }
+
+  bool _isPlatformPackage(Map<String, dynamic> asset) {
+    final name = (asset['name'] as String? ?? '').toLowerCase();
+    if (_platform == UpdatePlatform.android) return name.endsWith('.apk');
+    return name.endsWith('.exe') && name.contains('setup');
+  }
+
+  static String? _normalizeDigest(String? value) {
+    if (value == null || value.trim().isEmpty) return null;
+    final normalized = value.trim().replaceFirst(
+      RegExp(r'^sha256:', caseSensitive: false),
+      '',
+    );
+    return RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(normalized)
+        ? normalized.toLowerCase()
+        : null;
   }
 
   int _compareVersions(String left, String right) {
@@ -90,4 +325,7 @@ class UpdateService {
 class UpdateException implements Exception {
   const UpdateException(this.message);
   final String message;
+
+  @override
+  String toString() => message;
 }

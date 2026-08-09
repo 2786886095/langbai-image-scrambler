@@ -13,6 +13,7 @@ import 'models.dart';
 import 'settings_dialog.dart';
 import 'shared_import_dialog.dart';
 import 'text_processor.dart';
+import 'update_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -2270,7 +2271,9 @@ class _QueueCard extends StatelessWidget {
               ),
               const SizedBox(height: 16),
             ],
-            if (controller.hasFailed && !controller.isProcessing) ...[
+            if (controller.hasFailed &&
+                !controller.isProcessing &&
+                !controller.hasPendingArchiveExport) ...[
               OutlinedButton.icon(
                 onPressed: controller.retryFailed,
                 icon: const Icon(Icons.refresh_rounded),
@@ -2298,7 +2301,9 @@ class _QueueCard extends StatelessWidget {
               const SizedBox(height: 10),
             ],
             FilledButton.icon(
-              onPressed: controller.isProcessing
+              onPressed: controller.installingUpdate
+                  ? null
+                  : controller.isProcessing
                   ? controller.requestStop
                   : controller.tasks.isEmpty
                   ? null
@@ -2306,6 +2311,8 @@ class _QueueCard extends StatelessWidget {
               icon: Icon(
                 controller.isProcessing
                     ? Icons.stop_circle_outlined
+                    : controller.hasPendingArchiveExport
+                    ? Icons.file_upload_outlined
                     : mixedMode
                     ? Icons.folder_zip_outlined
                     : textMode
@@ -2319,6 +2326,8 @@ class _QueueCard extends StatelessWidget {
               label: Text(
                 controller.isProcessing
                     ? strings['cancel']
+                    : controller.hasPendingArchiveExport
+                    ? strings['continueExport']
                     : mixedMode
                     ? (controller.mode == ProcessMode.scramble
                           ? strings['startMixedScramble']
@@ -2587,6 +2596,7 @@ class _UpdateBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final controller = context.watch<AppController>();
     final update = controller.availableUpdate!;
+    final progress = controller.updateProgress;
     final scheme = Theme.of(context).colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -2595,28 +2605,75 @@ class _UpdateBanner extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: scheme.primary.withValues(alpha: 0.25)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(Icons.system_update_alt_rounded, color: scheme.primary),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              '${strings['updateAvailable']} v${update.latestVersion}',
-              style: const TextStyle(fontWeight: FontWeight.w800),
+          Row(
+            children: [
+              Icon(Icons.system_update_alt_rounded, color: scheme.primary),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '${strings['updateAvailable']} v${update.latestVersion}',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+              IconButton(
+                tooltip: strings['dismiss'],
+                onPressed: controller.installingUpdate
+                    ? null
+                    : controller.dismissUpdate,
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
+          ),
+          if (controller.installingUpdate) ...[
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: progress?.fraction),
+            const SizedBox(height: 8),
+            Text(
+              _updateProgressText(strings, progress),
+              style: TextStyle(
+                fontSize: 12,
+                color: scheme.onSurface.withValues(alpha: 0.72),
+              ),
             ),
-          ),
-          TextButton(
-            onPressed: controller.openUpdate,
-            child: Text(strings['downloadUpdate']),
-          ),
-          IconButton(
-            tooltip: strings['dismiss'],
-            onPressed: controller.dismissUpdate,
-            icon: const Icon(Icons.close_rounded),
-          ),
+          ] else ...[
+            if (controller.updateError != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                controller.updateError!,
+                style: TextStyle(fontSize: 12, color: scheme.error),
+              ),
+            ],
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                onPressed: controller.canInstallUpdate
+                    ? controller.installUpdate
+                    : null,
+                icon: const Icon(Icons.download_rounded),
+                label: Text(strings['downloadUpdate']),
+              ),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  String _updateProgressText(AppStrings strings, UpdateProgress? progress) {
+    if (progress == null) return strings['downloadingUpdate'];
+    return switch (progress.stage) {
+      UpdateStage.downloading =>
+        progress.fraction == null
+            ? strings['downloadingUpdate']
+            : '${strings['downloadingUpdate']} '
+                  '${(progress.fraction! * 100).round()}%',
+      UpdateStage.verifying => strings['verifyingUpdate'],
+      UpdateStage.installing => strings['startingInstaller'],
+    };
   }
 }
 
