@@ -113,6 +113,92 @@ void main() {
     );
     expect(wrong.exitCode, isNot(0));
   });
+
+  test('TXT creates a password ZIP with its original name and bytes', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'langbai-text-archive-test-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final encoded = File(path.join(root.path, 'encoded.txt'))
+      ..writeAsBytesSync('5bCP6K+V'.codeUnits);
+    final task = ImageTask(
+      id: 'text',
+      originalName: '正文.txt',
+      relativeDirectory: '',
+      sourceRootName: '',
+      workspaceType: WorkspaceType.text,
+    );
+    final service = ArchiveService(
+      temporaryRoot: Directory(path.join(root.path, 'out')),
+    );
+    final groups = service.plan(
+      tasks: [task],
+      stagedPaths: {'text': encoded.path},
+      grouping: CompressionGrouping.perFile,
+    );
+    final output = (await service.create(
+      groups: groups,
+      format: CompressionArchiveFormat.zip,
+      password: 'txt-secret',
+    )).single;
+    expect(output.fileName, '正文.zip');
+    final archive = ZipDecoder().decodeBytes(
+      File(output.path).readAsBytesSync(),
+      password: 'txt-secret',
+    );
+    expect(archive.single.name, '正文.txt');
+    expect(archive.single.readBytes(), encoded.readAsBytesSync());
+  });
+
+  test('TXT and mixed plans keep original names without scramble suffixes', () {
+    final tasks = [
+      ImageTask(
+        id: 'image',
+        originalName: '封面.jpg',
+        relativeDirectory: '第一章',
+        sourceRootName: '小说',
+        sourceRootId: 'novel',
+      ),
+      ImageTask(
+        id: 'text',
+        originalName: '正文.txt',
+        relativeDirectory: '第一章',
+        sourceRootName: '小说',
+        sourceRootId: 'novel',
+        workspaceType: WorkspaceType.text,
+      ),
+    ];
+    final service = ArchiveService();
+    final folder = service.plan(
+      tasks: tasks,
+      stagedPaths: const {'image': 'image-stage', 'text': 'text-stage'},
+      grouping: CompressionGrouping.perFolder,
+    );
+    expect(folder.single.baseName, '小说');
+    expect(folder.single.entries.map((item) => item.archivePath), [
+      '第一章/封面.png',
+      '第一章/正文.txt',
+    ]);
+
+    final perFile = service.plan(
+      tasks: [tasks.last],
+      stagedPaths: const {'text': 'text-stage'},
+      grouping: CompressionGrouping.perFile,
+    );
+    expect(perFile.single.baseName, '正文');
+    expect(perFile.single.entries.single.archivePath, '正文.txt');
+
+    final combined = service.plan(
+      tasks: tasks,
+      stagedPaths: const {'image': 'image-stage', 'text': 'text-stage'},
+      grouping: CompressionGrouping.combined,
+      now: DateTime(2026, 8, 9, 12, 34, 56),
+    );
+    expect(combined.single.baseName, 'Langbai_20260809_123456');
+    expect(combined.single.baseName, isNot(contains('混淆')));
+  });
 }
 
 int _readUint16(List<int> bytes, int offset) =>

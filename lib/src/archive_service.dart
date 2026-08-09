@@ -49,18 +49,14 @@ class ArchiveService {
     required CompressionGrouping grouping,
     DateTime? now,
   }) {
-    final imageTasks = tasks
-        .where(
-          (task) =>
-              task.workspaceType == WorkspaceType.image &&
-              stagedPaths.containsKey(task.id),
-        )
+    final processedTasks = tasks
+        .where((task) => stagedPaths.containsKey(task.id))
         .toList(growable: false);
-    if (imageTasks.isEmpty) return const [];
+    if (processedTasks.isEmpty) return const [];
 
     switch (grouping) {
       case CompressionGrouping.perFile:
-        return imageTasks
+        return processedTasks
             .map(
               (task) => ArchiveGroupPlan(
                 baseName: sanitizeFileName(
@@ -69,8 +65,7 @@ class ArchiveService {
                 entries: [
                   ArchiveEntryInput(
                     sourcePath: stagedPaths[task.id]!,
-                    archivePath:
-                        '${sanitizeFileName(basenameWithoutExtension(task.originalName))}.png',
+                    archivePath: _safeArchiveSegment(_processedFileName(task)),
                   ),
                 ],
               ),
@@ -78,7 +73,7 @@ class ArchiveService {
             .toList(growable: false);
       case CompressionGrouping.perFolder:
         final grouped = <String, List<ImageTask>>{};
-        for (final task in imageTasks) {
+        for (final task in processedTasks) {
           final key = task.sourceRootId.isNotEmpty
               ? 'root:${task.sourceRootId}'
               : 'file:${task.id}';
@@ -111,8 +106,12 @@ class ArchiveService {
             '${instant.second.toString().padLeft(2, '0')}';
         return [
           ArchiveGroupPlan(
-            baseName: 'Langbai_混淆_$stamp',
-            entries: _entriesFor(imageTasks, stagedPaths, includeRoot: true),
+            baseName: 'Langbai_$stamp',
+            entries: _entriesFor(
+              processedTasks,
+              stagedPaths,
+              includeRoot: true,
+            ),
           ),
         ];
     }
@@ -195,7 +194,7 @@ class ArchiveService {
           task.sourceRootName,
         if (task.relativeDirectory.trim().isNotEmpty)
           ...task.relativeDirectory.split(RegExp(r'[/\\]+')),
-        '${basenameWithoutExtension(task.originalName)}.png',
+        _processedFileName(task),
       ].map(_safeArchiveSegment).where((item) => item.isNotEmpty).toList();
       var candidate = segments.join('/');
       var suffix = 1;
@@ -226,9 +225,14 @@ class ArchiveService {
     return clean;
   }
 
+  String _processedFileName(ImageTask task) =>
+      task.workspaceType == WorkspaceType.text
+      ? sanitizeFileName(task.originalName)
+      : '${sanitizeFileName(basenameWithoutExtension(task.originalName))}.png';
+
   Future<String> _uniqueLocalBase(Directory root, String desired) async {
     final safe = _safeArchiveSegment(desired).isEmpty
-        ? 'Langbai_混淆'
+        ? 'Langbai'
         : _safeArchiveSegment(desired);
     var candidate = safe;
     var index = 1;

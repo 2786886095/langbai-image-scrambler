@@ -107,10 +107,7 @@ class AppController extends ChangeNotifier {
       _passwordVault?.profiles ?? const [];
   PasswordProfile? get selectedArchivePasswordProfile =>
       _passwordVault?.find(_settings.selectedArchivePasswordProfileId);
-  bool get canUseCompression =>
-      mode == ProcessMode.scramble &&
-      batch?.containsText != true &&
-      workspaceType == WorkspaceType.image;
+  bool get canUseCompression => mode == ProcessMode.scramble;
 
   void setMode(ProcessMode value) {
     if (isProcessing || mode == value) return;
@@ -599,10 +596,21 @@ class AppController extends ChangeNotifier {
           notifyListeners();
           try {
             final input = await _fileService.readTask(task);
-            final result = await _processOne(input, task, parsedSeed);
-            task.detectedAlgorithmId = result.algorithm.id;
+            late final Uint8List outputBytes;
+            late final String suffix;
+            if (task.workspaceType == WorkspaceType.image) {
+              final result = await _processOne(input, task, parsedSeed);
+              task.detectedAlgorithmId = result.algorithm.id;
+              outputBytes = Uint8List.fromList(result.bytes);
+              suffix = '.png';
+            } else {
+              outputBytes = await _textProcessor.encode(input);
+              task.detectedAlgorithmId = 'base64';
+              suffix = '.txt';
+            }
             stagedPaths[task.id] = await _fileService.stageOutputBytes(
-              Uint8List.fromList(result.bytes),
+              outputBytes,
+              suffix: suffix,
             );
             task.status = TaskStatus.completed;
           } catch (error) {

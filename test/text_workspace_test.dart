@@ -40,11 +40,13 @@ void main() {
     expect(find.text('Base64 恢复'), findsOneWidget);
     expect(find.text('选择 TXT'), findsOneWidget);
     expect(find.byKey(const ValueKey('algorithm-picker-field')), findsNothing);
+    expect(find.text('压缩输出'), findsOneWidget);
 
     await tester.tap(find.text('Base64 恢复'));
     await tester.pumpAndSettle();
     expect(controller.mode, ProcessMode.restore);
     expect(find.text('批量恢复 Base64，原始字节完整不变'), findsOneWidget);
+    expect(find.text('压缩输出'), findsNothing);
   });
 
   testWidgets('clipboard Base64 encodes and restores UTF-8 text', (

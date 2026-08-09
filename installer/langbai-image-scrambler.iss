@@ -2,7 +2,7 @@
   #define MyAppName "Langbai 图片混淆"
 #endif
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.1"
+  #define MyAppVersion "1.2.2"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "Langbai"

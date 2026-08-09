@@ -554,6 +554,30 @@ void main() {
   );
 
   testWidgets(
+    'desktop TXT compression output settings',
+    (tester) => render(
+      tester,
+      const Size(1440, 900),
+      'goldens/text_compression_desktop.png',
+      textWorkspace: true,
+      compressionEnabled: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
+    'small Android TXT compression output settings',
+    (tester) => render(
+      tester,
+      const Size(360, 640),
+      'goldens/text_compression_android_360x640.png',
+      textWorkspace: true,
+      compressionEnabled: true,
+    ),
+    skip: !_runGoldens,
+  );
+
+  testWidgets(
     'Android password vault',
     (tester) => render(
       tester,

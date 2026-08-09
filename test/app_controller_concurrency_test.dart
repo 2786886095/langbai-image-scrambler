@@ -136,6 +136,50 @@ void main() {
       expect(history.entries.single.artifacts.single.displayName, '原图.zip');
     },
   );
+
+  test(
+    'TXT compression Base64-encodes and exports only the original-name archive',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'check_updates': false,
+        'compression_enabled': true,
+      });
+      final settings = await AppSettings.load();
+      final files = _ArchiveOnlyFileService();
+      final archives = _MemoryArchiveService();
+      final history = ExportHistoryStore.memory();
+      final controller = AppController(
+        settings,
+        fileService: files,
+        archiveService: archives,
+        historyStore: history,
+      );
+      controller.setWorkspaceType(WorkspaceType.text);
+      controller.batch = ImportBatch(
+        tasks: [
+          ImageTask(
+            id: '1',
+            originalName: '正文.txt',
+            relativeDirectory: '',
+            sourceRootName: '',
+            workspaceType: WorkspaceType.text,
+          ),
+        ],
+        isFolder: false,
+        rootName: '',
+        workspaceType: WorkspaceType.text,
+      );
+
+      await controller.process();
+
+      expect(controller.canUseCompression, isTrue);
+      expect(files.rawOutputCalls, 0);
+      expect(files.stagedSuffixes, ['.txt']);
+      expect(files.savedArchives, ['正文.zip']);
+      expect(files.cleanedStagePaths, ['memory-stage-65.txt']);
+      expect(history.entries.single.artifacts.single.displayName, '正文.zip');
+    },
+  );
 }
 
 class _ConcurrentImageProcessor extends ImageProcessor {
@@ -219,6 +263,7 @@ class _ArchiveOnlyFileService extends FileService {
   int rawOutputCalls = 0;
   final List<String> savedArchives = [];
   final List<String> cleanedStagePaths = [];
+  final List<String> stagedSuffixes = [];
 
   @override
   Future<Uint8List> readTask(ImageTask task) async => Uint8List.fromList([1]);
@@ -227,7 +272,10 @@ class _ArchiveOnlyFileService extends FileService {
   Future<String> stageOutputBytes(
     Uint8List bytes, {
     String suffix = '.png',
-  }) async => 'memory-stage-${bytes.first}.png';
+  }) async {
+    stagedSuffixes.add(suffix);
+    return 'memory-stage-${bytes.first}$suffix';
+  }
 
   @override
   Future<void> cleanupStagedFiles(Iterable<String> paths) async {

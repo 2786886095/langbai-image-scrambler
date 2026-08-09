@@ -1055,14 +1055,7 @@ class FileService {
   }) {
     var base = basenameWithoutExtension(task.originalName);
     if (workspaceType == WorkspaceType.text) {
-      if (mode == ProcessMode.restore) {
-        base = base.replaceFirst(
-          RegExp(r'[_-](混淆|混淆文|encoded|base64)$', caseSensitive: false),
-          '',
-        );
-        return '${sanitizeFileName(base)}_还原.txt';
-      }
-      return '${sanitizeFileName(base)}_混淆.txt';
+      return sanitizeFileName(task.originalName);
     }
     if (mode == ProcessMode.restore) {
       base = base.replaceFirst(RegExp(r'[_-](混淆|混淆圖|scrambled)$'), '');
@@ -1134,7 +1127,7 @@ class FileService {
   String _archiveBatchFolderName() {
     final now = DateTime.now();
     String two(int value) => value.toString().padLeft(2, '0');
-    return 'Langbai_混淆压缩_${now.year}${two(now.month)}${two(now.day)}_'
+    return 'Langbai_压缩_${now.year}${two(now.month)}${two(now.day)}_'
         '${two(now.hour)}${two(now.minute)}${two(now.second)}';
   }
 

@@ -77,6 +77,34 @@ void main() {
     expect(FileService().outputFileName(task, ProcessMode.scramble), '封面.png');
   });
 
+  test('TXT output keeps the original file name in both modes', () {
+    final task = ImageTask(
+      id: '1',
+      originalName: '正文.txt',
+      relativeDirectory: '',
+      sourceRootName: '',
+      inputPath: 'unused',
+      workspaceType: WorkspaceType.text,
+    );
+    final service = FileService();
+    expect(
+      service.outputFileName(
+        task,
+        ProcessMode.scramble,
+        workspaceType: WorkspaceType.text,
+      ),
+      '正文.txt',
+    );
+    expect(
+      service.outputFileName(
+        task,
+        ProcessMode.restore,
+        workspaceType: WorkspaceType.text,
+      ),
+      '正文.txt',
+    );
+  });
+
   test('same-name files use full-width incrementing suffixes', () async {
     final temporary = await Directory.systemTemp.createTemp(
       'langbai-collision-test-',
@@ -323,7 +351,7 @@ void main() {
       );
       expect(
         saved.location,
-        path.join(exportBase.path, '小说合集', '长篇', '第一部_混淆.txt'),
+        path.join(exportBase.path, '小说合集', '长篇', '第一部.TXT'),
       );
       expect(await File(saved.location).readAsString(), 'encoded');
     },

@@ -396,6 +396,10 @@ class _Workspace extends StatelessWidget {
                                         WorkspaceType.image) ...[
                                       const SizedBox(height: 18),
                                       _ConfigurationCard(strings: strings),
+                                    ] else if (controller.mode ==
+                                        ProcessMode.scramble) ...[
+                                      const SizedBox(height: 18),
+                                      _TextCompressionCard(strings: strings),
                                     ],
                                   ],
                                 ),
@@ -415,6 +419,10 @@ class _Workspace extends StatelessWidget {
                                 WorkspaceType.image) ...[
                               const SizedBox(height: 16),
                               _ConfigurationCard(strings: strings),
+                            ] else if (controller.mode ==
+                                ProcessMode.scramble) ...[
+                              const SizedBox(height: 16),
+                              _TextCompressionCard(strings: strings),
                             ],
                             const SizedBox(height: 16),
                             _QueueCard(strings: strings),
@@ -1343,6 +1351,20 @@ class _CompressionPanel extends StatelessWidget {
       ],
     );
   }
+}
+
+class _TextCompressionCard extends StatelessWidget {
+  const _TextCompressionCard({required this.strings});
+
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(18),
+      child: _CompressionPanel(strings: strings),
+    ),
+  );
 }
 
 Future<void> _showPasswordVault(BuildContext context, AppStrings strings) {
