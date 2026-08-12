@@ -54,12 +54,15 @@ class UpdateInfo {
 }
 
 typedef UpdateInstaller = Future<void> Function(File package);
+typedef WindowsUpdateLauncher =
+    Future<int> Function(String helperPath, List<String> arguments);
 
 class UpdateService {
   UpdateService({
     http.Client? client,
     UpdatePlatform? platform,
     this.installerOverride,
+    this.windowsLauncherOverride,
     MethodChannel? channel,
   }) : _client = client ?? http.Client(),
        _platform =
@@ -76,6 +79,7 @@ class UpdateService {
   final http.Client _client;
   final UpdatePlatform _platform;
   final UpdateInstaller? installerOverride;
+  final WindowsUpdateLauncher? windowsLauncherOverride;
   final MethodChannel _channel;
 
   static const _headers = {
@@ -245,51 +249,89 @@ class UpdateService {
   Future<void> _installWindows(File package) async {
     final currentExe = Platform.resolvedExecutable;
     final installDir = path.dirname(currentExe);
-    final script = File(path.join(package.parent.path, 'install-update.ps1'));
-    await script.writeAsString(r'''
-param(
-  [Parameter(Mandatory=$true)][string]$Installer,
-  [Parameter(Mandatory=$true)][int]$AppPid,
-  [Parameter(Mandatory=$true)][string]$InstallDir,
-  [Parameter(Mandatory=$true)][string]$AppExe
-)
-$ErrorActionPreference = 'Stop'
-$scriptPath = $MyInvocation.MyCommand.Path
-try { Wait-Process -Id $AppPid -ErrorAction SilentlyContinue } catch {}
-$arguments = @(
-  '/VERYSILENT',
-  '/SUPPRESSMSGBOXES',
-  '/NORESTART',
-  '/CLOSEAPPLICATIONS',
-  "/DIR=`"$InstallDir`""
-)
-$installed = Start-Process -FilePath $Installer -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
-if ($installed.ExitCode -eq 0 -and (Test-Path -LiteralPath $AppExe)) {
-  Start-Process -FilePath $AppExe -WorkingDirectory $InstallDir
-}
-Start-Sleep -Milliseconds 500
-Remove-Item -LiteralPath $Installer -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
-''', flush: true);
-    await Process.start('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-WindowStyle',
-      'Hidden',
-      '-File',
-      script.path,
-      '-Installer',
+    final helperSource = File(
+      path.join(installDir, 'langbai_update_helper.exe'),
+    );
+    if (!await helperSource.exists()) {
+      await _launchLegacyWindowsInstaller(package, installDir: installDir);
+      return;
+    }
+    final helper = File(
+      path.join(package.parent.path, path.basename(helperSource.path)),
+    );
+    await helperSource.copy(helper.path);
+    final logDirectory = await _windowsLogDirectory(package.parent.path);
+    final log = File(path.join(logDirectory.path, 'update.log'));
+    final ready = File(path.join(package.parent.path, 'helper.ready'));
+    final arguments = [
       package.path,
-      '-AppPid',
       pid.toString(),
-      '-InstallDir',
       installDir,
-      '-AppExe',
       currentExe,
-    ], mode: ProcessStartMode.detached);
-    exit(0);
+      log.path,
+      ready.path,
+    ];
+    final launcher = windowsLauncherOverride;
+    final helperPid = launcher == null
+        ? (await Process.start(
+            helper.path,
+            arguments,
+            mode: ProcessStartMode.detached,
+          )).pid
+        : await launcher(helper.path, arguments);
+    if (helperPid <= 0) {
+      throw const UpdateException('启动更新组件失败，请重试');
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (!await ready.exists() && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (!await ready.exists()) {
+      throw const UpdateException('更新组件没有响应，请重试');
+    }
+    if (launcher == null) exit(0);
+  }
+
+  Future<void> _launchLegacyWindowsInstaller(
+    File package, {
+    required String installDir,
+  }) async {
+    // Builds up to v1.2.4 do not contain the native helper. Keep the first
+    // fixed update actionable by opening Setup visibly instead of using the
+    // former detached PowerShell hand-off that could disappear silently.
+    final logDirectory = await _windowsLogDirectory(package.parent.path);
+    final arguments = [
+      '/VERYSILENT',
+      '/SUPPRESSMSGBOXES',
+      '/NORESTART',
+      '/CLOSEAPPLICATIONS',
+      '/RESTARTAPPLICATIONS',
+      '/LOG=${path.join(logDirectory.path, 'installer.log')}',
+      '/DIR=$installDir',
+    ];
+    final launcher = windowsLauncherOverride;
+    final installerPid = launcher == null
+        ? (await Process.start(
+            package.path,
+            arguments,
+            mode: ProcessStartMode.detached,
+          )).pid
+        : await launcher(package.path, arguments);
+    if (installerPid <= 0) {
+      throw const UpdateException('启动安装程序失败，请重试');
+    }
+  }
+
+  Future<Directory> _windowsLogDirectory(String fallbackRoot) async {
+    final directory = Directory(
+      path.join(
+        Platform.environment['LOCALAPPDATA'] ?? fallbackRoot,
+        'LangbaiImageScrambler',
+        'logs',
+      ),
+    );
+    await directory.create(recursive: true);
+    return directory;
   }
 
   bool _isPlatformPackage(Map<String, dynamic> asset) {

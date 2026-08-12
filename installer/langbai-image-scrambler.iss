@@ -2,7 +2,7 @@
   #define MyAppName "Langbai 图片混淆"
 #endif
 #ifndef MyAppVersion
-  #define MyAppVersion "1.2.4"
+  #define MyAppVersion "1.2.5"
 #endif
 #ifndef MyAppPublisher
   #define MyAppPublisher "Langbai"
@@ -26,6 +26,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\{#MyDefaultDirName}
+DisableDirPage=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest

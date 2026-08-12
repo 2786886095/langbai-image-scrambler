@@ -16,6 +16,19 @@ add_executable(${BINARY_NAME} WIN32
   "runner.exe.manifest"
 )
 
+# A tiny native helper performs the update only after the Flutter process has
+# exited. Keeping this outside PowerShell avoids script-policy and detached
+# shell failures on end-user machines.
+add_executable(langbai_update_helper WIN32
+  "update_helper.cpp"
+)
+apply_standard_settings(langbai_update_helper)
+target_compile_definitions(langbai_update_helper PRIVATE "NOMINMAX")
+target_link_libraries(langbai_update_helper PRIVATE "shell32.lib")
+set_target_properties(langbai_update_helper PROPERTIES
+  LINK_FLAGS "/MANIFESTUAC:\"level='asInvoker' uiAccess='false'\""
+)
+
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
@@ -38,3 +51,4 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+add_dependencies(${BINARY_NAME} langbai_update_helper)
