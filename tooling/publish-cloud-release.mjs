@@ -18,7 +18,10 @@ const assets = dryRun ? [] : [setupPath, apkPath].map((item) => {
 });
 const expectedNames = new Set(assets.map((item) => item.name));
 const releaseName = /^(?:Langbai-Image-Scrambler-Setup-v\d+\.\d+\.\d+(?:\(\d+\))?\.exe|Langbai-Image-Scrambler-v\d+\.\d+\.\d+-android(?:\(\d+\))?\.apk)$/i;
-const targetRemarks = new Set(["\u5145\u7535\u6f2b\u753b", "\u5145\u7535\u5c0f\u8bf4"]);
+const targetRemarks = new Set([
+  "\u8f6f\u4ef6\uff5c\u6f2b\u753b\u5c0f\u8bf4\u67e5\u770b\u89c6\u9891",
+  "\u8f6f\u4ef6\uff5c\u6f2b\u753b\u67e5\u770b\u89c6\u9891",
+]);
 const uploaderRoot = process.env.LANGBAI_CLOUD_UPLOADER_ROOT ?? "F:/AI/agent/codex/dual-cloud-uploader";
 const electronPath = process.env.LANGBAI_ELECTRON_PATH ??
   "F:/AI/agent/codex/dual-cloud-uploader-rebuilt-ui-20260812/node_modules/electron/dist/electron.exe";
@@ -62,18 +65,20 @@ try {
   await window.waitForFunction(() => Boolean(window.triCloud), null, { timeout: 20_000 });
   original = await window.evaluate(() => window.triCloud.getProviders());
   const targets = original.flatMap((provider) =>
-    provider.accounts.flatMap((account, accountIndex) =>
-      account.quickDirectories
-        .filter((directory) => targetRemarks.has(directory.remark))
-        .map((directory) => ({
+    provider.accounts.flatMap((account, accountIndex) => {
+      const softwareDirectories = account.quickDirectories.filter((directory) => targetRemarks.has(directory.remark));
+      if (softwareDirectories.length !== 2) {
+        throw new Error(`${provider.id} \u8d26\u53f7 ${accountIndex + 1} \u5e94\u914d\u7f6e 2 \u4e2a\u8f6f\u4ef6\u53d1\u5e03\u76ee\u5f55\uff0c\u5b9e\u9645\u4e3a ${softwareDirectories.length} \u4e2a`);
+      }
+      return softwareDirectories.map((directory) => ({
           providerId: provider.id,
           accountId: account.id,
           accountIndex: accountIndex + 1,
           quickDirectoryId: directory.id,
           remark: directory.remark,
           remotePath: directory.remotePath,
-        })),
-    ),
+        }));
+    }),
   );
   if (targets.length !== 12) throw new Error(`目标目录应为 12 个，实际为 ${targets.length} 个`);
 
