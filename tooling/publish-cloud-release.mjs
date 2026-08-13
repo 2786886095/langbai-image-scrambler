@@ -17,7 +17,7 @@ const assets = dryRun ? [] : [setupPath, apkPath].map((item) => {
   return { path: absolute, name: path.basename(absolute), kind: "file", size: stat.size };
 });
 const expectedNames = new Set(assets.map((item) => item.name));
-const releaseName = /^(?:Langbai-Image-Scrambler-Setup-v\d+\.\d+\.\d+\.exe|Langbai-Image-Scrambler-v\d+\.\d+\.\d+-android\.apk)$/i;
+const releaseName = /^(?:Langbai-Image-Scrambler-Setup-v\d+\.\d+\.\d+(?:\(\d+\))?\.exe|Langbai-Image-Scrambler-v\d+\.\d+\.\d+-android(?:\(\d+\))?\.apk)$/i;
 const targetRemarks = new Set(["\u5145\u7535\u6f2b\u753b", "\u5145\u7535\u5c0f\u8bf4"]);
 const uploaderRoot = process.env.LANGBAI_CLOUD_UPLOADER_ROOT ?? "F:/AI/agent/codex/dual-cloud-uploader";
 const electronPath = process.env.LANGBAI_ELECTRON_PATH ??
@@ -26,6 +26,26 @@ const playwrightPath = process.env.LANGBAI_PLAYWRIGHT_PATH ??
   "F:/AI/agent/codex/dual-cloud-uploader-rebuilt-ui-20260812/node_modules/playwright-core/index.mjs";
 const { _electron: electron } = await import(pathToFileURL(playwrightPath).href);
 const reportPath = path.resolve("build", `cloud-publish-${new Date().toISOString().replaceAll(":", "-")}.json`);
+const lockPath = path.resolve("build", "cloud-publish.lock");
+fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+if (fs.existsSync(lockPath)) {
+  const previousPid = Number(fs.readFileSync(lockPath, "utf8"));
+  try {
+    process.kill(previousPid, 0);
+    throw new Error(`另一个网盘发布进程仍在运行（PID ${previousPid}）`);
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    fs.unlinkSync(lockPath);
+  }
+}
+const lock = fs.openSync(lockPath, "wx");
+fs.writeFileSync(lock, String(process.pid), "utf8");
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const exactReleaseSet = (items) => {
+  const matches = items.filter((item) => item.kind === "file" && releaseName.test(item.name));
+  return matches.length === expectedNames.size && matches.every((item) => expectedNames.has(item.name));
+};
 
 const app = await electron.launch({
   executablePath: electronPath,
@@ -84,6 +104,16 @@ try {
         ({ providerId, remotePath }) => window.triCloud.listRemote(providerId, remotePath),
         target,
       );
+      const row = report.targets.find(
+        (item) => item.providerId === target.providerId && item.accountId === target.accountId && item.remotePath === target.remotePath,
+      );
+      if (exactReleaseSet(current)) {
+        row.deleted = [];
+        row.uploaded = [];
+        row.alreadyCurrent = true;
+        row.verified = true;
+        continue;
+      }
       const oldPaths = current
         .filter((item) => item.kind === "file" && releaseName.test(item.name))
         .map((item) => item.path);
@@ -117,17 +147,18 @@ try {
       const failures = terminal.filter((event) => event.status !== "success");
       if (failures.length) throw new Error(`${target.providerId} 账号 ${target.accountIndex} 上传失败：${failures.map((item) => item.message).join("；")}`);
 
-      const after = await window.evaluate(
-        ({ providerId, remotePath }) => window.triCloud.listRemote(providerId, remotePath),
-        target,
-      );
-      const actual = new Set(after.filter((item) => item.kind === "file").map((item) => item.name));
-      if (![...expectedNames].every((name) => actual.has(name))) {
+      let after = [];
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        after = await window.evaluate(
+          ({ providerId, remotePath }) => window.triCloud.listRemote(providerId, remotePath),
+          target,
+        );
+        if (exactReleaseSet(after)) break;
+        await delay(2_000);
+      }
+      if (!exactReleaseSet(after)) {
         throw new Error(`${target.providerId} 账号 ${target.accountIndex} 上传后校验失败`);
       }
-      const row = report.targets.find(
-        (item) => item.providerId === target.providerId && item.accountId === target.accountId && item.remotePath === target.remotePath,
-      );
       row.deleted = oldPaths;
       row.uploaded = [...expectedNames];
       row.verified = true;
@@ -177,5 +208,7 @@ try {
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
   await app.close();
+  fs.closeSync(lock);
+  if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
   process.stdout.write(`${reportPath}\n`);
 }
