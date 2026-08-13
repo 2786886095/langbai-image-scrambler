@@ -55,8 +55,13 @@ if (-not $SkipGitHub) {
     if ($pending) { throw 'Git 工作区需先提交，避免发布未提交代码' }
     git push
     if ($LASTEXITCODE) { throw 'Git 推送失败' }
-    gh release create $tag --repo 2786886095/langbai-image-scrambler --title "小番茄图片混淆 $tag" --notes-file $ReleaseNotesFile $setup $apk $portable $checksums
-    if ($LASTEXITCODE) { throw 'GitHub Release 发布失败' }
+    gh release view $tag --repo 2786886095/langbai-image-scrambler --json url | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "GitHub Release 已存在，继续执行网盘同步：$tag"
+    } else {
+        gh release create $tag --repo 2786886095/langbai-image-scrambler --title "小番茄图片混淆 $tag" --notes-file $ReleaseNotesFile $setup $apk $portable $checksums
+        if ($LASTEXITCODE) { throw 'GitHub Release 发布失败' }
+    }
 }
 
 if (-not $SkipCloud) {
