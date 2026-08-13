@@ -48,6 +48,8 @@ class AppController extends ChangeNotifier {
   late ProcessMode mode;
   late WorkspaceType workspaceType;
   late ScrambleAlgorithm algorithm;
+  late ScrambleAlgorithm _scrambleAlgorithm;
+  late bool _scramblePasswordEnabled;
   ImportBatch? batch;
   bool passwordEnabled = false;
   String password = '';
@@ -120,11 +122,18 @@ class AppController extends ChangeNotifier {
   void setMode(ProcessMode value) {
     if (isProcessing || mode == value) return;
     _discardPendingArchiveExport();
+    if (mode == ProcessMode.scramble) {
+      if (!algorithm.isAutomatic) _scrambleAlgorithm = algorithm;
+      _scramblePasswordEnabled = passwordEnabled;
+    }
     mode = value;
     algorithm = value == ProcessMode.restore
         ? ScrambleAlgorithm.auto
-        : ScrambleAlgorithm.composite;
-    passwordEnabled = false;
+        : _scrambleAlgorithm;
+    passwordEnabled =
+        value == ProcessMode.scramble &&
+        _scramblePasswordEnabled &&
+        !algorithm.isCompatibility;
     lastExportHistoryId = null;
     _resetTaskStates();
     _persistProcessingDefaults();
@@ -156,7 +165,11 @@ class AppController extends ChangeNotifier {
     if (isProcessing || algorithm == value) return;
     _discardPendingArchiveExport();
     algorithm = value;
-    if (value.isCompatibility) passwordEnabled = false;
+    if (mode == ProcessMode.scramble && !value.isAutomatic) {
+      _scrambleAlgorithm = value;
+      if (value.isCompatibility) _scramblePasswordEnabled = false;
+      passwordEnabled = !value.isCompatibility && _scramblePasswordEnabled;
+    }
     _persistProcessingDefaults();
     notifyListeners();
   }
@@ -165,6 +178,7 @@ class AppController extends ChangeNotifier {
     if (algorithm.isCompatibility || isProcessing) return;
     _discardPendingArchiveExport();
     passwordEnabled = value;
+    _scramblePasswordEnabled = value;
     _persistProcessingDefaults();
     notifyListeners();
   }
@@ -296,16 +310,16 @@ class AppController extends ChangeNotifier {
         ? WorkspaceType.image
         : WorkspaceType.text;
     final profile = _settings.profileFor(workspaceType);
+    _scrambleAlgorithm = profile.scrambleAlgorithm;
+    _scramblePasswordEnabled = profile.passwordProtectionEnabled;
     mode = selectedMode;
     algorithm = selectedMode == ProcessMode.restore
         ? ScrambleAlgorithm.auto
-        : (profile.algorithm.isAutomatic
-              ? ScrambleAlgorithm.composite
-              : profile.algorithm);
+        : _scrambleAlgorithm;
     passwordEnabled =
         selectedMode == ProcessMode.scramble &&
         workspaceType == WorkspaceType.image &&
-        profile.passwordProtectionEnabled &&
+        _scramblePasswordEnabled &&
         !algorithm.isCompatibility;
     _resetTaskStates();
     progress = 0;
@@ -1017,19 +1031,23 @@ class AppController extends ChangeNotifier {
         workspaceType: workspaceType,
         mode: mode,
         algorithm: algorithm,
-        passwordProtectionEnabled: passwordEnabled,
+        scrambleAlgorithm: _scrambleAlgorithm,
+        passwordProtectionEnabled: _scramblePasswordEnabled,
       ),
     );
   }
 
   void _applyWorkspaceProfile(WorkspaceSettingsProfile profile) {
     mode = profile.mode;
-    algorithm = profile.algorithm;
-    if (mode == ProcessMode.scramble && algorithm.isAutomatic) {
-      algorithm = ScrambleAlgorithm.composite;
-    }
+    _scrambleAlgorithm = profile.scrambleAlgorithm.isAutomatic
+        ? ScrambleAlgorithm.composite
+        : profile.scrambleAlgorithm;
+    _scramblePasswordEnabled = profile.passwordProtectionEnabled;
+    algorithm = mode == ProcessMode.restore
+        ? ScrambleAlgorithm.auto
+        : _scrambleAlgorithm;
     passwordEnabled =
-        profile.passwordProtectionEnabled &&
+        _scramblePasswordEnabled &&
         workspaceType == WorkspaceType.image &&
         mode == ProcessMode.scramble &&
         !algorithm.isCompatibility;

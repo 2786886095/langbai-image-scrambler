@@ -14,6 +14,7 @@ class WorkspaceSettingsProfile {
   const WorkspaceSettingsProfile({
     required this.mode,
     required this.algorithm,
+    required this.scrambleAlgorithm,
     required this.passwordProtectionEnabled,
     required this.compressionEnabled,
     required this.compressionFormat,
@@ -23,6 +24,7 @@ class WorkspaceSettingsProfile {
 
   final ProcessMode mode;
   final ScrambleAlgorithm algorithm;
+  final ScrambleAlgorithm scrambleAlgorithm;
   final bool passwordProtectionEnabled;
   final bool compressionEnabled;
   final CompressionArchiveFormat compressionFormat;
@@ -32,6 +34,7 @@ class WorkspaceSettingsProfile {
   WorkspaceSettingsProfile copyWith({
     ProcessMode? mode,
     ScrambleAlgorithm? algorithm,
+    ScrambleAlgorithm? scrambleAlgorithm,
     bool? passwordProtectionEnabled,
     bool? compressionEnabled,
     CompressionArchiveFormat? compressionFormat,
@@ -40,6 +43,7 @@ class WorkspaceSettingsProfile {
   }) => WorkspaceSettingsProfile(
     mode: mode ?? this.mode,
     algorithm: algorithm ?? this.algorithm,
+    scrambleAlgorithm: scrambleAlgorithm ?? this.scrambleAlgorithm,
     passwordProtectionEnabled:
         passwordProtectionEnabled ?? this.passwordProtectionEnabled,
     compressionEnabled: compressionEnabled ?? this.compressionEnabled,
@@ -93,6 +97,7 @@ class AppSettings extends ChangeNotifier {
 
   static const _modeSuffix = 'mode';
   static const _algorithmSuffix = 'algorithm';
+  static const _scrambleAlgorithmSuffix = 'scramble_algorithm';
   static const _passwordProtectionSuffix = 'password_protection_enabled';
   static const _compressionEnabledSuffix = 'compression_enabled';
   static const _compressionFormatSuffix = 'compression_format';
@@ -241,12 +246,14 @@ class AppSettings extends ChangeNotifier {
     required WorkspaceType workspaceType,
     required ProcessMode mode,
     required ScrambleAlgorithm algorithm,
+    required ScrambleAlgorithm scrambleAlgorithm,
     required bool passwordProtectionEnabled,
   }) async {
     if (workspaceType == WorkspaceType.mixed) return;
     final profile = profileFor(workspaceType).copyWith(
       mode: mode,
       algorithm: algorithm,
+      scrambleAlgorithm: scrambleAlgorithm,
       passwordProtectionEnabled: passwordProtectionEnabled,
     );
     _workspaceProfiles[workspaceType] = profile;
@@ -260,6 +267,10 @@ class AppSettings extends ChangeNotifier {
       _preferences.setString(
         _workspaceKey(workspaceType, _algorithmSuffix),
         algorithm.id,
+      ),
+      _preferences.setString(
+        _workspaceKey(workspaceType, _scrambleAlgorithmSuffix),
+        scrambleAlgorithm.id,
       ),
       _preferences.setBool(
         _workspaceKey(workspaceType, _passwordProtectionSuffix),
@@ -409,16 +420,26 @@ class AppSettings extends ChangeNotifier {
         preferences.getBool(_workspaceKey(workspace, suffix)) ??
         (migrateLegacy ? preferences.getBool(legacyKey) : null);
 
+    final algorithm = ScrambleAlgorithm.values.firstWhere(
+      (item) => item.id == migratedString(_algorithmSuffix, _lastAlgorithmKey),
+      orElse: () => defaults.algorithm,
+    );
+    final savedScrambleAlgorithm = preferences.getString(
+      _workspaceKey(workspace, _scrambleAlgorithmSuffix),
+    );
+    final scrambleAlgorithm = ScrambleAlgorithm.values.firstWhere(
+      (item) => !item.isAutomatic && item.id == savedScrambleAlgorithm,
+      orElse: () =>
+          algorithm.isAutomatic ? defaults.scrambleAlgorithm : algorithm,
+    );
+
     return WorkspaceSettingsProfile(
       mode: ProcessMode.values.firstWhere(
         (item) => item.name == migratedString(_modeSuffix, _lastProcessModeKey),
         orElse: () => defaults.mode,
       ),
-      algorithm: ScrambleAlgorithm.values.firstWhere(
-        (item) =>
-            item.id == migratedString(_algorithmSuffix, _lastAlgorithmKey),
-        orElse: () => defaults.algorithm,
-      ),
+      algorithm: algorithm,
+      scrambleAlgorithm: scrambleAlgorithm,
       passwordProtectionEnabled:
           migratedBool(_passwordProtectionSuffix, _passwordProtectionKey) ??
           defaults.passwordProtectionEnabled,
@@ -451,6 +472,7 @@ class AppSettings extends ChangeNotifier {
       const WorkspaceSettingsProfile(
         mode: ProcessMode.scramble,
         algorithm: ScrambleAlgorithm.composite,
+        scrambleAlgorithm: ScrambleAlgorithm.composite,
         passwordProtectionEnabled: false,
         compressionEnabled: false,
         compressionFormat: CompressionArchiveFormat.zip,

@@ -143,6 +143,7 @@ class MainActivity : FlutterActivity() {
                     openOutputLocation(
                         Uri.parse(call.argument<String>("uri")!!),
                         call.argument<Boolean>("isDirectory") ?: false,
+                        call.argument<String>("fallbackUri")?.let(Uri::parse),
                     )
                     result.success(null)
                 } catch (error: Throwable) {
@@ -621,35 +622,81 @@ class MainActivity : FlutterActivity() {
         return DocumentsContract.deleteDocument(contentResolver, uri)
     }
 
-    private fun openOutputLocation(uri: Uri, isDirectory: Boolean) {
+    private fun openOutputLocation(uri: Uri, isDirectory: Boolean, fallbackUri: Uri?) {
+        val candidates = linkedMapOf<String, Intent>()
         if (isDirectory) {
-            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
-                addFlags(
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
+            val documentUri = try {
+                DocumentsContract.buildDocumentUriUsingTree(
+                    uri,
+                    DocumentsContract.getTreeDocumentId(uri),
+                )
+            } catch (_: Throwable) {
+                uri
+            }
+            collectViewCandidates(
+                candidates,
+                documentUri,
+                listOf(DocumentsContract.Document.MIME_TYPE_DIR, "resource/folder", "*/*"),
+                grantWrite = true,
+            )
+            if (documentUri != uri) {
+                collectViewCandidates(
+                    candidates,
+                    uri,
+                    listOf(DocumentsContract.Document.MIME_TYPE_DIR, "resource/folder", "*/*"),
+                    grantWrite = true,
                 )
             }
-            startActivity(intent)
-            return
+        } else {
+            collectViewCandidates(
+                candidates,
+                uri,
+                listOf(contentResolver.getType(uri) ?: "*/*", "*/*"),
+            )
         }
 
-        val mimeType = contentResolver.getType(uri) ?: "*/*"
-        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mimeType)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (candidates.isEmpty() && fallbackUri != null) {
+            collectViewCandidates(
+                candidates,
+                fallbackUri,
+                listOf(contentResolver.getType(fallbackUri) ?: "*/*", "*/*"),
+            )
         }
-        try {
-            startActivity(viewIntent)
-        } catch (_: ActivityNotFoundException) {
-            val browseIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = mimeType
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (candidates.isEmpty()) throw ActivityNotFoundException("没有可打开输出位置的应用")
+
+        val choices = candidates.values.toList()
+        val chooser = Intent.createChooser(choices.first(), "选择应用打开输出位置").apply {
+            putExtra("android.intent.extra.AUTO_LAUNCH_SINGLE_CHOICE", false)
+            if (choices.size > 1) {
+                putExtra(Intent.EXTRA_INITIAL_INTENTS, choices.drop(1).toTypedArray())
             }
-            startActivity(browseIntent)
+        }
+        startActivity(chooser)
+    }
+
+    private fun collectViewCandidates(
+        candidates: MutableMap<String, Intent>,
+        uri: Uri,
+        mimeTypes: List<String>,
+        grantWrite: Boolean = false,
+    ) {
+        val grantFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+            Intent.FLAG_GRANT_PREFIX_URI_PERMISSION or
+            if (grantWrite) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0
+        for (mimeType in mimeTypes.distinct()) {
+            val implicitIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType)
+                addFlags(grantFlags)
+            }
+            for (match in packageManager.queryIntentActivities(implicitIntent, 0)) {
+                val activityInfo = match.activityInfo ?: continue
+                val key = "${activityInfo.packageName}/${activityInfo.name}"
+                if (candidates.containsKey(key)) continue
+                candidates[key] = Intent(implicitIntent).apply {
+                    setClassName(activityInfo.packageName, activityInfo.name)
+                }
+                grantUriPermission(activityInfo.packageName, uri, grantFlags)
+            }
         }
     }
 

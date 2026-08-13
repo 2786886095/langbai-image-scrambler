@@ -28,6 +28,29 @@ void main() {
   });
 
   test(
+    'restore round trip keeps the image scramble algorithm and password toggle',
+    () async {
+      SharedPreferences.setMockInitialValues({'check_updates': false});
+      final controller = AppController(await AppSettings.load());
+      controller.setAlgorithm(ScrambleAlgorithm.pixelPermutation);
+      controller.setPasswordEnabled(true);
+
+      controller.setMode(ProcessMode.restore);
+      expect(controller.algorithm, ScrambleAlgorithm.auto);
+      expect(controller.passwordEnabled, isFalse);
+      controller.setMode(ProcessMode.scramble);
+      expect(controller.algorithm, ScrambleAlgorithm.pixelPermutation);
+      expect(controller.passwordEnabled, isTrue);
+      await Future<void>.delayed(Duration.zero);
+
+      final reopened = AppController(await AppSettings.load());
+      expect(reopened.mode, ProcessMode.scramble);
+      expect(reopened.algorithm, ScrambleAlgorithm.pixelPermutation);
+      expect(reopened.passwordEnabled, isTrue);
+    },
+  );
+
+  test(
     'TXT workspace and restore mode persist without sensitive values',
     () async {
       SharedPreferences.setMockInitialValues({'check_updates': false});

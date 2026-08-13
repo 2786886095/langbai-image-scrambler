@@ -1033,18 +1033,26 @@ class FileService {
     if (location == null || location.isEmpty) {
       throw const FileServiceException('导出记录中没有可打开的位置');
     }
-    await openOutputLocation(location, isDirectory: entry.locationIsDirectory);
+    await openOutputLocation(
+      location,
+      isDirectory: entry.locationIsDirectory,
+      fallbackLocation: entry.artifacts.isEmpty
+          ? null
+          : entry.artifacts.first.location,
+    );
   }
 
   Future<void> openOutputLocation(
     String location, {
     required bool isDirectory,
+    String? fallbackLocation,
   }) async {
     try {
       if (Platform.isAndroid) {
         await _channel.invokeMethod<void>('openOutputLocation', {
           'uri': location,
           'isDirectory': isDirectory,
+          'fallbackUri': ?fallbackLocation,
         });
         return;
       }

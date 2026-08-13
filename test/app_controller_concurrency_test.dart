@@ -347,6 +347,7 @@ class _MemoryFileService extends FileService {
   Future<void> openOutputLocation(
     String location, {
     required bool isDirectory,
+    String? fallbackLocation,
   }) async {
     openedLocations.add((location, isDirectory));
   }

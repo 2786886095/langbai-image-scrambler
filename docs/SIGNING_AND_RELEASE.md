@@ -26,3 +26,18 @@ Setup 必须保持 `DisableDirPage=no`，使用户每次手动安装时都能确
 - 可选：`Langbai-Image-Scrambler-vX.Y.Z-windows-portable.zip`
 
 应用会从 `2786886095/langbai-image-scrambler` 的最新 Release 中选择当前平台对应的 `.exe` 或 `.apk` 资产。
+
+
+## 一键发布
+
+在项目根目录执行：
+
+```powershell
+.\tooling\release-all.ps1
+```
+
+脚本依次运行静态检查、非截图测试、无桌面 UI 的截图回归、Windows/Android Release 构建、Setup/便携包/哈希生成、GitHub Release 发布，最后只把 Setup.exe 与 Android APK 同步到三网盘。
+
+三网盘目标由“三盘同传助手”的正式配置提供：夸克、百度、迅雷各 2 个账号，每账号只选择备注为“充电漫画”和“充电小说”的快捷目录，共 12 个目录。上传前会完整只读预检；任一目录不可读时，在删除旧版前停止。上传后逐目录重新读取并验证两个新文件。
+
+本机默认依赖路径可通过 `LANGBAI_CLOUD_UPLOADER_ROOT`、`LANGBAI_ELECTRON_PATH`、`LANGBAI_PLAYWRIGHT_PATH` 环境变量覆盖。
