@@ -125,7 +125,11 @@ try {
       }
       const terminal = await window.evaluate(
         async ({ files, providerId }) => {
-          const result = await window.triCloud.startUpload({ files, providerIds: [providerId], concurrency: 2 });
+          const result = await window.triCloud.startUpload({
+            files,
+            providerIds: [providerId],
+            concurrency: providerId === "thunder" ? 1 : 2,
+          });
           return await new Promise((resolve, reject) => {
             const events = [];
             const timer = setTimeout(() => {
