@@ -62,7 +62,13 @@ let original;
 try {
   window = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach((item) => item.hide()));
-  await window.waitForFunction(() => Boolean(window.triCloud), null, { timeout: 20_000 });
+  let bridgeReady = false;
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    bridgeReady = await window.evaluate(() => Boolean(window.triCloud));
+    if (bridgeReady) break;
+    await delay(250);
+  }
+  if (!bridgeReady) throw new Error("网盘上传器桥接初始化超时");
   original = await window.evaluate(() => window.triCloud.getProviders());
   const targets = original.flatMap((provider) =>
     provider.accounts.flatMap((account, accountIndex) => {
