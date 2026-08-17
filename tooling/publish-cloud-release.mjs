@@ -4,6 +4,8 @@ import { pathToFileURL } from "node:url";
 
 const args = new Map(process.argv.slice(2).map((value, index, all) => [value, all[index + 1]]));
 const dryRun = process.argv.includes("--dry-run");
+const enabledProviders = new Set((args.get("--providers") ?? "quark,thunder")
+  .split(",").map((item) => item.trim()).filter(Boolean));
 const setupPath = args.get("--setup");
 const apkPath = args.get("--apk");
 if (!dryRun && (!setupPath || !apkPath)) {
@@ -74,7 +76,7 @@ try {
   }
   if (!bridgeReady) throw new Error("网盘上传器桥接初始化超时");
   original = await window.evaluate(() => window.triCloud.getProviders());
-  const targets = original.flatMap((provider) =>
+  const targets = original.filter((provider) => enabledProviders.has(provider.id)).flatMap((provider) =>
     provider.accounts.flatMap((account, accountIndex) => {
       const softwareDirectories = account.quickDirectories.filter((directory) => targetRemarks.has(directory.remark));
       if (softwareDirectories.length !== 2) {
@@ -90,7 +92,8 @@ try {
         }));
     }),
   );
-  if (targets.length !== 12) throw new Error(`目标目录应为 12 个，实际为 ${targets.length} 个`);
+  const expectedTargetCount = enabledProviders.size * 4;
+  if (targets.length !== expectedTargetCount) throw new Error(`目标目录应为 ${expectedTargetCount} 个，实际为 ${targets.length} 个`);
 
   // All accounts and directories must be readable before the first deletion.
   for (const target of targets) {
