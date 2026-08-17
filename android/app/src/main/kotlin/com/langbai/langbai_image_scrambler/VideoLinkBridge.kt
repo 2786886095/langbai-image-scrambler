@@ -17,7 +17,7 @@ class VideoLinkBridge(private val context: Context) {
         engineReady = true
     }
 
-    fun resolveAndDownload(url: String): Map<String, Any> {
+    fun resolveAndDownload(url: String, netscapeCookies: String = ""): Map<String, Any> {
         require(url.startsWith("http://") || url.startsWith("https://")) {
             "请输入有效的视频链接"
         }
@@ -26,6 +26,8 @@ class VideoLinkBridge(private val context: Context) {
         val directory = File(context.cacheDir, "resolved-video/$processId")
         require(directory.mkdirs() || directory.isDirectory) { "无法创建视频下载缓存" }
         val template = File(directory, "%(title).120B.%(ext)s").absolutePath
+        val cookieFile = File(directory, "cookies.txt")
+        if (netscapeCookies.isNotBlank()) cookieFile.writeText(netscapeCookies)
         val request = YoutubeDLRequest(url)
             .addOption("--no-playlist")
             .addOption("--no-mtime")
@@ -36,8 +38,15 @@ class VideoLinkBridge(private val context: Context) {
             .addOption("--max-filesize", MAX_VIDEO_BYTES.toString())
             .addOption("-f", "bestvideo*+bestaudio/best")
             .addOption("--merge-output-format", "mp4")
+            .also {
+                if (cookieFile.isFile) it.addOption("--cookies", cookieFile.absolutePath)
+            }
             .addOption("-o", template)
-        YoutubeDL.getInstance().execute(request, processId) { _, _, _ -> }
+        try {
+            YoutubeDL.getInstance().execute(request, processId) { _, _, _ -> }
+        } finally {
+            cookieFile.delete()
+        }
         val output = directory.walkTopDown()
             .filter {
                 it.isFile && it.length() > 0L &&

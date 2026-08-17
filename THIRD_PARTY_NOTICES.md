@@ -45,4 +45,10 @@ RAR 仅用于导入和解压；应用不生成 RAR。
 - Android 同时使用 `io.github.junkfood02.youtubedl-android:library:0.18.1` 内置 yt-dlp 运行环境，实现手机端本地分享链接解析与下载；组件来源为 [youtubedl-android](https://github.com/yausername/youtubedl-android)。
 - Windows 压缩包 SHA-256 为 `49a73bdf0850092a252ac4641d922f3048d63ed113e196cc65ce1e4f7fb33e85`；许可证位于 `assets/bin/windows/ffmpeg-license.txt`。
 
+## 视频链接登录与解析
+
+- `flutter_inappwebview` 6.1.5 / Android 1.1.3（Apache-2.0）用于在 Windows 与 Android 内打开 B站、抖音官方登录页并读取对应站点 Cookie；账号密码直接提交给官方页面，应用仅保存解析所需 Cookie。仓库内 Android 构建副本只将已弃用的默认 ProGuard 文件替换为当前 Android Gradle Plugin 支持的优化配置。
+- Windows 内置官方 yt-dlp `2026.07.04`，用于在本机解析与下载用户提交的视频链接；项目采用 Unlicense，许可证位于 `assets/bin/windows/yt-dlp-license.txt`。
+- `assets/bin/windows/yt-dlp.exe` SHA-256 为 `52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8`。
+
 其余 Flutter/Dart 依赖的许可证可通过对应包仓库或发布包中的许可证清单查看。

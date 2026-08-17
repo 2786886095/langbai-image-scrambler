@@ -61,6 +61,32 @@ extension VideoAudioModeX on VideoAudioMode {
       : VideoAudioMode.keep;
 }
 
+enum VideoPerformanceMode { normal, fullPower }
+
+extension VideoPerformanceModeX on VideoPerformanceMode {
+  String get id => this == VideoPerformanceMode.fullPower ? 'full' : 'normal';
+
+  String titleFor(bool traditional) => switch ((this, traditional)) {
+    (VideoPerformanceMode.normal, false) => '普通',
+    (VideoPerformanceMode.normal, true) => '普通',
+    (VideoPerformanceMode.fullPower, false) => '全功率',
+    (VideoPerformanceMode.fullPower, true) => '全功率',
+  };
+
+  String descriptionFor(bool traditional) => switch ((this, traditional)) {
+    (VideoPerformanceMode.normal, false) => '限制并发，降低内存占用、耗电与发热。',
+    (VideoPerformanceMode.normal, true) => '限制並行，降低記憶體佔用、耗電與發熱。',
+    (VideoPerformanceMode.fullPower, false) =>
+      '启用多核逐帧处理与快速编码；速度更高，但会增加发热和临时空间占用。',
+    (VideoPerformanceMode.fullPower, true) =>
+      '啟用多核心逐幀處理與快速編碼；速度更高，但會增加發熱和暫存空間佔用。',
+  };
+
+  static VideoPerformanceMode fromId(String? value) => value == 'full'
+      ? VideoPerformanceMode.fullPower
+      : VideoPerformanceMode.normal;
+}
+
 class VideoManifest {
   const VideoManifest({
     required this.originalName,

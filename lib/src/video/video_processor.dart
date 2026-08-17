@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:image/image.dart' as image;
 import 'package:path/path.dart' as path;
 
@@ -10,6 +13,25 @@ import 'video_ffmpeg.dart';
 import 'video_models.dart';
 
 typedef VideoProgressCallback = void Function(double progress, String stage);
+
+int computeVideoWorkerCount({
+  required VideoPerformanceMode performanceMode,
+  required int width,
+  required int height,
+  required bool android,
+  int? logicalProcessors,
+}) {
+  final processors = logicalProcessors ?? Platform.numberOfProcessors;
+  final cpuLimit = performanceMode == VideoPerformanceMode.fullPower
+      ? processors
+      : (android ? min(2, processors) : min(4, processors));
+  final memoryBudget = performanceMode == VideoPerformanceMode.fullPower
+      ? (android ? 512 : 2048) * 1024 * 1024
+      : (android ? 256 : 768) * 1024 * 1024;
+  final estimatedBytesPerWorker = max(width * height * 16, 1);
+  final memoryLimit = max(1, memoryBudget ~/ estimatedBytesPerWorker);
+  return min(max(1, cpuLimit), memoryLimit);
+}
 
 class VideoProcessor {
   VideoProcessor({VideoFfmpeg? ffmpeg, VideoContainer? container})
@@ -54,6 +76,7 @@ class VideoProcessor {
     required String outputPath,
     required VideoAlgorithm algorithm,
     required VideoAudioMode audioMode,
+    VideoPerformanceMode performanceMode = VideoPerformanceMode.normal,
     String? password,
     VideoProgressCallback? onProgress,
   }) async {
@@ -73,6 +96,7 @@ class VideoProcessor {
         audioMode: audioMode,
         seed: seed,
         reverse: false,
+        performanceMode: performanceMode,
         onProgress: onProgress,
       );
       onProgress?.call(.9, '正在写入精确还原数据');
@@ -84,6 +108,7 @@ class VideoProcessor {
         audioMode: audioMode,
         seed: seed,
         password: password,
+        performanceMode: performanceMode,
       );
       onProgress?.call(1, '视频混淆完成');
       return VideoProcessResult(
@@ -106,6 +131,7 @@ class VideoProcessor {
     VideoAudioMode requestedAudioMode = VideoAudioMode.keep,
     int? manualSeed,
     String? password,
+    VideoPerformanceMode performanceMode = VideoPerformanceMode.normal,
     VideoProgressCallback? onProgress,
   }) async {
     final inspection = await inspect(inputPath);
@@ -115,6 +141,7 @@ class VideoProcessor {
         inputPath: inputPath,
         outputPath: outputPath,
         password: password,
+        performanceMode: performanceMode,
       );
       onProgress?.call(1, 'SHA-256 校验通过');
       return VideoProcessResult(
@@ -140,6 +167,7 @@ class VideoProcessor {
           : inspection.audioMode,
       seed: seed,
       reverse: true,
+      performanceMode: performanceMode,
       onProgress: onProgress,
     );
     return VideoProcessResult(
@@ -157,6 +185,7 @@ class VideoProcessor {
     required VideoAudioMode audioMode,
     required int seed,
     required bool reverse,
+    required VideoPerformanceMode performanceMode,
     VideoProgressCallback? onProgress,
   }) async {
     final work = await Directory.systemTemp.createTemp('langbai-frames-');
@@ -181,6 +210,12 @@ class VideoProcessor {
         '0:v:0',
         '-fps_mode',
         'passthrough',
+        '-threads',
+        performanceMode == VideoPerformanceMode.fullPower
+            ? '0'
+            : (Platform.isAndroid ? '2' : '4'),
+        '-compression_level',
+        performanceMode == VideoPerformanceMode.fullPower ? '1' : '3',
         path.join(frames.path, 'frame-%08d.png'),
       ]);
       final files = await frames
@@ -190,22 +225,22 @@ class VideoProcessor {
           .toList();
       files.sort((a, b) => a.path.compareTo(b.path));
       if (files.isEmpty) throw const VideoProcessException('视频中没有可处理的画面');
-      var cursor = 0;
-      var completed = 0;
-      final workerCount = (Platform.isAndroid ? 2 : 4).clamp(1, files.length);
-      Future<void> worker() async {
-        while (cursor < files.length) {
-          final file = files[cursor++];
-          await _transformFrame(file, algorithm, seed, reverse);
-          completed++;
-          onProgress?.call(
-            .12 + .65 * completed / files.length,
-            '正在处理视频帧 $completed/${files.length}',
-          );
-        }
-      }
-
-      await Future.wait(List.generate(workerCount, (_) => worker()));
+      final dimensions = await _readPngDimensions(files.first);
+      final workerCount = computeVideoWorkerCount(
+        performanceMode: performanceMode,
+        width: dimensions.$1,
+        height: dimensions.$2,
+        android: Platform.isAndroid,
+      ).clamp(1, files.length);
+      await _transformFrames(
+        files: files,
+        workerCount: workerCount,
+        algorithm: algorithm,
+        seed: seed,
+        reverse: reverse,
+        pngLevel: performanceMode == VideoPerformanceMode.fullPower ? 1 : 3,
+        onProgress: onProgress,
+      );
       onProgress?.call(.8, '正在合成可播放视频');
       final marker =
           'LANGBAI_VIDEO_V1;algorithm=${algorithm.id};seed=$seed;audio=${audioMode.id}';
@@ -226,9 +261,15 @@ class VideoProcessor {
         '-c:v',
         'libx264',
         '-preset',
-        'veryfast',
+        performanceMode == VideoPerformanceMode.fullPower
+            ? 'superfast'
+            : 'veryfast',
         '-crf',
         '18',
+        '-threads',
+        performanceMode == VideoPerformanceMode.fullPower
+            ? '0'
+            : (Platform.isAndroid ? '2' : '4'),
         '-pix_fmt',
         'yuv420p',
         '-vf',
@@ -258,34 +299,80 @@ class VideoProcessor {
     }
   }
 
-  Future<void> _transformFrame(
-    File file,
-    VideoAlgorithm algorithm,
-    int seed,
-    bool reverse,
-  ) async {
-    final decoded = image.decodePng(await file.readAsBytes());
-    if (decoded == null) throw const VideoProcessException('视频帧读取失败');
-    final rgba = decoded.getBytes(order: image.ChannelOrder.rgba);
-    final raster = ImageRaster(decoded.width, decoded.height, rgba);
-    final transformed = algorithm == VideoAlgorithm.rowColumnShift
-        ? ScrambleEngine.transformRowColumn(raster, seed, reverse: reverse)
-        : ScrambleEngine.transform(
-            raster,
-            algorithm == VideoAlgorithm.gilbert
-                ? ScrambleAlgorithm.cherryTomato
-                : ScrambleAlgorithm.blockShuffle,
-            seed,
-            reverse: reverse,
-          );
-    final output = image.Image.fromBytes(
-      width: transformed.width,
-      height: transformed.height,
-      bytes: transformed.rgba.buffer,
-      numChannels: 4,
-      order: image.ChannelOrder.rgba,
-    );
-    await file.writeAsBytes(image.encodePng(output, level: 3), flush: false);
+  Future<(int, int)> _readPngDimensions(File file) async {
+    final handle = await file.open();
+    try {
+      final header = Uint8List.fromList(await handle.read(24));
+      if (header.length >= 24) {
+        final data = ByteData.sublistView(header);
+        final width = data.getUint32(16, Endian.big);
+        final height = data.getUint32(20, Endian.big);
+        if (width > 0 && height > 0) return (width, height);
+      }
+      return (1920, 1080);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  Future<void> _transformFrames({
+    required List<File> files,
+    required int workerCount,
+    required VideoAlgorithm algorithm,
+    required int seed,
+    required bool reverse,
+    required int pngLevel,
+    VideoProgressCallback? onProgress,
+  }) async {
+    final receivePort = ReceivePort();
+    final isolates = <Isolate>[];
+    final completer = Completer<void>();
+    var completed = 0;
+    var finishedWorkers = 0;
+    late final StreamSubscription<dynamic> subscription;
+    subscription = receivePort.listen((message) {
+      if (message == 'progress') {
+        completed++;
+        onProgress?.call(
+          .12 + .65 * completed / files.length,
+          '正在多核处理视频帧 $completed/${files.length}',
+        );
+      } else if (message == 'done') {
+        finishedWorkers++;
+        if (finishedWorkers == workerCount && !completer.isCompleted) {
+          completer.complete();
+        }
+      } else if (message is Map && message['error'] != null) {
+        if (!completer.isCompleted) {
+          completer.completeError(VideoProcessException('${message['error']}'));
+        }
+      }
+    });
+    try {
+      for (var worker = 0; worker < workerCount; worker++) {
+        final workerPaths = <String>[
+          for (var index = worker; index < files.length; index += workerCount)
+            files[index].path,
+        ];
+        isolates.add(
+          await Isolate.spawn(_videoFrameWorker, {
+            'sendPort': receivePort.sendPort,
+            'paths': workerPaths,
+            'algorithm': algorithm.id,
+            'seed': seed,
+            'reverse': reverse,
+            'pngLevel': pngLevel,
+          }),
+        );
+      }
+      await completer.future;
+    } finally {
+      await subscription.cancel();
+      receivePort.close();
+      for (final isolate in isolates) {
+        isolate.kill(priority: Isolate.immediate);
+      }
+    }
   }
 
   double _fpsFromProbe(String output) {
@@ -295,4 +382,54 @@ class VideoProcessor {
     final match = RegExp(r'([0-9]+(?:\.[0-9]+)?)\s*fps').firstMatch(streamLine);
     return (double.tryParse(match?.group(1) ?? '') ?? 30).clamp(1, 120);
   }
+}
+
+void _videoFrameWorker(Map<String, dynamic> request) {
+  final sendPort = request['sendPort'] as SendPort;
+  try {
+    final paths = (request['paths'] as List).cast<String>();
+    final algorithm = VideoAlgorithmX.fromId(request['algorithm'] as String?);
+    final seed = request['seed'] as int;
+    final reverse = request['reverse'] as bool;
+    final pngLevel = request['pngLevel'] as int;
+    for (final framePath in paths) {
+      _transformVideoFrame(framePath, algorithm, seed, reverse, pngLevel);
+      sendPort.send('progress');
+    }
+    sendPort.send('done');
+  } catch (error) {
+    sendPort.send({'error': '视频帧处理失败：$error'});
+  }
+}
+
+void _transformVideoFrame(
+  String framePath,
+  VideoAlgorithm algorithm,
+  int seed,
+  bool reverse,
+  int pngLevel,
+) {
+  final file = File(framePath);
+  final decoded = image.decodePng(file.readAsBytesSync());
+  if (decoded == null) throw const VideoProcessException('视频帧读取失败');
+  final rgba = decoded.getBytes(order: image.ChannelOrder.rgba);
+  final raster = ImageRaster(decoded.width, decoded.height, rgba);
+  final transformed = algorithm == VideoAlgorithm.rowColumnShift
+      ? ScrambleEngine.transformRowColumn(raster, seed, reverse: reverse)
+      : ScrambleEngine.transform(
+          raster,
+          algorithm == VideoAlgorithm.gilbert
+              ? ScrambleAlgorithm.cherryTomato
+              : ScrambleAlgorithm.blockShuffle,
+          seed,
+          reverse: reverse,
+        );
+  final output = image.Image.fromBytes(
+    width: transformed.width,
+    height: transformed.height,
+    bytes: transformed.rgba.buffer,
+    numChannels: 4,
+    order: image.ChannelOrder.rgba,
+  );
+  file.writeAsBytesSync(image.encodePng(output, level: pngLevel), flush: false);
 }

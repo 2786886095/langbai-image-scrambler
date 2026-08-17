@@ -110,6 +110,9 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/ffmpeg.7z"
   "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/ffmpeg-license.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/yt-dlp.exe"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/yt-dlp-license.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/yt-dlp-SHA2-256SUMS.txt"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/video"
   COMPONENT Runtime)
 

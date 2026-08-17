@@ -46,16 +46,21 @@ void main() {
       'video_mode_restore': false,
       'video_scramble_algorithm': 'block_shuffle',
       'video_restore_algorithm': 'auto',
+      'video_scramble_performance': 'full',
+      'video_restore_performance': 'normal',
     });
     await pumpScreen(tester, const VideoScreen(), const Size(390, 844));
 
     expect(find.text('网格分块打乱'), findsOneWidget);
+    expect(find.text('全功率'), findsOneWidget);
     await tester.tap(find.text('一键还原'));
     await tester.pumpAndSettle();
     expect(find.text('自动识别'), findsOneWidget);
+    expect(find.text('普通'), findsOneWidget);
     await tester.tap(find.text('视频混淆'));
     await tester.pumpAndSettle();
     expect(find.text('网格分块打乱'), findsOneWidget);
+    expect(find.text('全功率'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     if (_reviewGoldens) {
@@ -117,7 +122,7 @@ void main() {
       const Size(390, 844),
     );
     expect(find.text('生成可播放的混淆影片'), findsOneWidget);
-    expect(find.text('選擇本機影片'), findsOneWidget);
+    expect(find.text('選擇影片'), findsOneWidget);
     expect(find.text('Gilbert 曲線逐幀混淆'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

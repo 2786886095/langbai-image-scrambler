@@ -45,10 +45,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
 /android/key.properties
 /.vs-install.pid
 /tooling-vs-install.*.log
 /tooling_cherry_reference.py
 /tooling/vs-buildtools-install.log
 /tooling/vs-buildtools-install.exit
+/tooling/nuget/
+/third_party/flutter_inappwebview_android/example/
+/third_party/flutter_inappwebview_android/test/
 assets/bin/windows/ffmpeg.exe

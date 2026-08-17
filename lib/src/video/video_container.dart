@@ -27,6 +27,7 @@ class VideoContainer {
     required VideoAudioMode audioMode,
     required int seed,
     String? password,
+    VideoPerformanceMode performanceMode = VideoPerformanceMode.normal,
   }) async {
     final original = File(originalPath);
     final output = File(outputPath);
@@ -41,11 +42,14 @@ class VideoContainer {
     final hashInput = crypto.sha256.startChunkedConversion(digest);
     final payloadStart = await output.length();
     final sink = output.openWrite(mode: FileMode.append);
+    final effectiveChunkSize = performanceMode == VideoPerformanceMode.fullPower
+        ? 16 * 1024 * 1024
+        : chunkSize;
     var chunkIndex = 0;
     final originalHandle = await original.open();
     try {
       while (true) {
-        final raw = await originalHandle.read(chunkSize);
+        final raw = await originalHandle.read(effectiveChunkSize);
         if (raw.isEmpty) break;
         hashInput.add(raw);
         if (!protected) {
@@ -79,7 +83,7 @@ class VideoContainer {
       audioMode: audioMode,
       seed: seed,
       passwordProtected: protected,
-      chunkSize: chunkSize,
+      chunkSize: effectiveChunkSize,
       salt: salt,
       baseNonce: baseNonce,
     );
@@ -146,6 +150,7 @@ class VideoContainer {
     required String inputPath,
     required String outputPath,
     String? password,
+    VideoPerformanceMode performanceMode = VideoPerformanceMode.normal,
   }) async {
     final file = File(inputPath);
     final handle = await file.open();
@@ -184,7 +189,12 @@ class VideoContainer {
       var chunkIndex = 0;
       try {
         while (remainingPlain > 0) {
-          final plainLength = min(manifest.chunkSize, remainingPlain);
+          final readChunkSize =
+              !manifest.passwordProtected &&
+                  performanceMode == VideoPerformanceMode.fullPower
+              ? max(manifest.chunkSize, 16 * 1024 * 1024)
+              : manifest.chunkSize;
+          final plainLength = min(readChunkSize, remainingPlain);
           final storedLength =
               plainLength + (manifest.passwordProtected ? 16 : 0);
           if (storedLength > remainingPayload) {

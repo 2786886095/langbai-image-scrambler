@@ -108,6 +108,7 @@ class MainActivity : FlutterActivity() {
             "resolveVideoLink" -> runInBackground(result) {
                 videoLinkBridge.resolveAndDownload(
                     call.argument<String>("url")?.trim().orEmpty(),
+                    call.argument<String>("cookies").orEmpty(),
                 )
             }
             "copyUriToCache" -> runInBackground(result) {

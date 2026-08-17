@@ -43,6 +43,8 @@ class AppController extends ChangeNotifier {
   final UpdateService _updateService;
   final ExportHistoryStore _historyStore;
   final ArchiveService _archiveService;
+
+  AppSettings get settings => _settings;
   final PasswordVault? _passwordVault;
 
   late ProcessMode mode;

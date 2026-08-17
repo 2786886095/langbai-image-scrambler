@@ -49,6 +49,7 @@ void main() {
         algorithm: VideoAlgorithm.blockShuffle,
         audioMode: VideoAudioMode.reversibleScramble,
         password: '视频测试密码',
+        performanceMode: VideoPerformanceMode.fullPower,
       );
 
       final playable = await Process.run(ffmpeg, [
@@ -73,6 +74,7 @@ void main() {
         requestedAlgorithm: VideoAlgorithm.auto,
         requestedAudioMode: VideoAudioMode.keep,
         password: '视频测试密码',
+        performanceMode: VideoPerformanceMode.fullPower,
       );
       expect(result.exact, isTrue);
       expect(

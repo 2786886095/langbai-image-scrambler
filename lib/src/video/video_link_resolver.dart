@@ -24,6 +24,7 @@ class VideoLinkResolver {
 
   Future<String> resolveAndDownload(
     String source, {
+    String? netscapeCookies,
     LinkProgressCallback? onProgress,
   }) async {
     final url = _extractUrl(source);
@@ -41,7 +42,7 @@ class VideoLinkResolver {
       onProgress?.call(.05, '正在使用手机本地解析引擎');
       final result = await _channel.invokeMapMethod<String, dynamic>(
         'resolveVideoLink',
-        {'url': url},
+        {'url': url, 'cookies': netscapeCookies ?? ''},
       );
       final resolvedPath = result?['path']?.toString();
       if (resolvedPath == null || resolvedPath.isEmpty) {
@@ -49,6 +50,13 @@ class VideoLinkResolver {
       }
       onProgress?.call(1, '视频解析下载完成');
       return resolvedPath;
+    }
+    if (!kIsWeb && Platform.isWindows) {
+      return _resolveWindows(
+        url,
+        netscapeCookies: netscapeCookies,
+        onProgress: onProgress,
+      );
     }
     onProgress?.call(.04, '正在调用 Langbai 解析引擎');
     final resolveResponse = await _client
@@ -112,6 +120,125 @@ class VideoLinkResolver {
       Uri.parse('$defaultApiUrl/api/v1/jobs/${job['id']}/file'),
       filename,
       onProgress: (value, stage) => onProgress?.call(.75 + value * .25, stage),
+    );
+  }
+
+  Future<String> _resolveWindows(
+    String url, {
+    String? netscapeCookies,
+    LinkProgressCallback? onProgress,
+  }) async {
+    final binary = _windowsYtDlpPath();
+    if (!await File(binary).exists()) {
+      throw const VideoProcessException('Windows 视频解析引擎缺失，请重新安装软件');
+    }
+    final directory = await Directory.systemTemp.createTemp(
+      'langbai-video-resolver-',
+    );
+    final cookieFile = File(path.join(directory.path, 'cookies.txt'));
+    if (netscapeCookies != null && netscapeCookies.trim().isNotEmpty) {
+      await cookieFile.writeAsString(netscapeCookies, flush: true);
+    }
+    onProgress?.call(.05, '正在使用本地账号会话解析视频');
+    final arguments = <String>[
+      '--no-playlist',
+      '--no-mtime',
+      '--newline',
+      '--concurrent-fragments',
+      '8',
+      '--retries',
+      '4',
+      '--socket-timeout',
+      '30',
+      '--max-filesize',
+      '${8 * 1024 * 1024 * 1024}',
+      if (await cookieFile.exists()) ...['--cookies', cookieFile.path],
+      '-f',
+      'bestvideo*+bestaudio/best',
+      '--merge-output-format',
+      'mp4',
+      '-o',
+      path.join(directory.path, '%(title).120B.%(ext)s'),
+      url,
+    ];
+    final process = await Process.start(
+      binary,
+      arguments,
+      runInShell: false,
+      mode: ProcessStartMode.normal,
+    );
+    final output = StringBuffer();
+    var reported = .08;
+    final streams = [process.stdout, process.stderr].map(
+      (stream) => stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .forEach((line) {
+            output.writeln(line);
+            final match = RegExp(r'\[download\]\s+([0-9.]+)%').firstMatch(line);
+            final percent = double.tryParse(match?.group(1) ?? '');
+            if (percent != null) {
+              reported = (.08 + percent / 100 * .86).clamp(.08, .94);
+              onProgress?.call(
+                reported,
+                '账号视频解析下载中 ${percent.toStringAsFixed(0)}%',
+              );
+            }
+          }),
+    );
+    final exitCode = await process.exitCode;
+    await Future.wait(streams);
+    if (await cookieFile.exists()) await cookieFile.delete();
+    if (exitCode != 0) {
+      final useful = output
+          .toString()
+          .split(RegExp(r'[\r\n]+'))
+          .where((line) => line.trim().isNotEmpty)
+          .toList();
+      throw VideoProcessException(
+        useful.isEmpty ? '视频解析失败' : '视频解析失败：${useful.last}',
+      );
+    }
+    final candidates = await directory
+        .list()
+        .where((entry) => entry is File)
+        .cast<File>()
+        .where(
+          (file) => const {
+            '.mp4',
+            '.mkv',
+            '.webm',
+            '.mov',
+            '.m4v',
+            '.avi',
+          }.contains(path.extension(file.path).toLowerCase()),
+        )
+        .toList();
+    if (candidates.isEmpty) {
+      throw const VideoProcessException('解析完成但没有找到可处理的视频文件');
+    }
+    candidates.sort(
+      (left, right) =>
+          right.lastModifiedSync().compareTo(left.lastModifiedSync()),
+    );
+    onProgress?.call(1, '视频解析下载完成');
+    return candidates.first.path;
+  }
+
+  String _windowsYtDlpPath() {
+    final release = path.join(
+      path.dirname(Platform.resolvedExecutable),
+      'data',
+      'video',
+      'yt-dlp.exe',
+    );
+    if (File(release).existsSync()) return release;
+    return path.join(
+      Directory.current.path,
+      'assets',
+      'bin',
+      'windows',
+      'yt-dlp.exe',
     );
   }
 

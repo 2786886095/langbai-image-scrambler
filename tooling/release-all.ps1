@@ -8,7 +8,8 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
-$flutter = 'F:\AI\agent\codex\.flutter-3.44\bin\flutter.bat'
+$flutter = 'F:\flutter-3.44\bin\flutter.bat'
+$env:PATH = (Join-Path $root 'tooling\nuget') + ';' + $env:PATH
 $env:PUB_CACHE = 'F:\AI\agent\codex\.pub-cache-ascii'
 $versionLine = Select-String -LiteralPath 'pubspec.yaml' -Pattern '^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$'
 if (-not $versionLine) { throw 'pubspec.yaml 中的版本格式不正确' }
@@ -16,7 +17,6 @@ $version = $versionLine.Matches[0].Groups[1].Value
 $tag = "v$version"
 $setup = Join-Path $root "release\Langbai-Image-Scrambler-Setup-v$version.exe"
 $apk = Join-Path $root "release\Langbai-Image-Scrambler-v$version-android.apk"
-$portable = Join-Path $root "release\Langbai-Image-Scrambler-v$version-windows-portable.zip"
 $checksums = Join-Path $root "release\SHA256SUMS-v$version.txt"
 
 if (-not $SkipBuild) {
@@ -31,18 +31,16 @@ if (-not $SkipBuild) {
     & $flutter build apk --release
     if ($LASTEXITCODE) { throw 'Android 构建失败' }
     Copy-Item 'build\app\outputs\flutter-apk\app-release.apk' $apk -Force
-    if (Test-Path $portable) { Remove-Item $portable -Force }
-    Compress-Archive -Path 'build\windows\x64\runner\Release\*' -DestinationPath $portable -CompressionLevel Optimal
     & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' "/DMyAppVersion=$version" 'installer\langbai-image-scrambler.iss'
     if ($LASTEXITCODE) { throw 'Setup 构建失败' }
-    $hashLines = @($setup, $apk, $portable) | ForEach-Object {
+    $hashLines = @($setup, $apk) | ForEach-Object {
         $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $(Split-Path -Leaf $_)"
     }
     [IO.File]::WriteAllLines($checksums, $hashLines, [Text.UTF8Encoding]::new($false))
 }
 
-foreach ($file in @($setup, $apk, $portable, $checksums)) {
+foreach ($file in @($setup, $apk, $checksums)) {
     if (-not (Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0) {
         throw "发布文件缺失：$file"
     }
@@ -59,7 +57,7 @@ if (-not $SkipGitHub) {
     if ($LASTEXITCODE -eq 0) {
         Write-Host "GitHub Release 已存在，继续执行网盘同步：$tag"
     } else {
-        gh release create $tag --repo 2786886095/langbai-image-scrambler --title "小番茄图片混淆 $tag" --notes-file $ReleaseNotesFile $setup $apk $portable $checksums
+        gh release create $tag --repo 2786886095/langbai-image-scrambler --title "小番茄图片混淆 $tag" --notes-file $ReleaseNotesFile $setup $apk $checksums
         if ($LASTEXITCODE) { throw 'GitHub Release 发布失败' }
     }
 }

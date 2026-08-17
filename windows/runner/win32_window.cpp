@@ -4,6 +4,7 @@
 #include <flutter_windows.h>
 
 #include "resource.h"
+#include "window_state.h"
 
 namespace {
 
@@ -122,7 +123,8 @@ Win32Window::~Win32Window() {
 
 bool Win32Window::Create(const std::wstring& title,
                          const Point& origin,
-                         const Size& size) {
+                         const Size& size,
+                         bool coordinates_are_physical) {
   Destroy();
 
   const wchar_t* window_class =
@@ -134,10 +136,22 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
+  const int window_x = coordinates_are_physical
+                           ? origin.x
+                           : Scale(origin.x, scale_factor);
+  const int window_y = coordinates_are_physical
+                           ? origin.y
+                           : Scale(origin.y, scale_factor);
+  const int window_width = coordinates_are_physical
+                               ? static_cast<int>(size.width)
+                               : Scale(size.width, scale_factor);
+  const int window_height = coordinates_are_physical
+                                ? static_cast<int>(size.height)
+                                : Scale(size.height, scale_factor);
+
   HWND window = CreateWindow(
       window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
-      Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
-      Scale(size.width, scale_factor), Scale(size.height, scale_factor),
+      window_x, window_y, window_width, window_height,
       nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
@@ -179,6 +193,10 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_CLOSE:
+      SaveWindowState(hwnd);
+      break;
+
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();
