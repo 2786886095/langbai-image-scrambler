@@ -49,6 +49,10 @@ const exactReleaseSet = (items) => {
   const matches = items.filter((item) => item.kind === "file" && releaseName.test(item.name));
   return matches.length === expectedNames.size && matches.every((item) => expectedNames.has(item.name));
 };
+const containsExpectedSet = (items) => {
+  const names = new Set(items.filter((item) => item.kind === "file").map((item) => item.name));
+  return [...expectedNames].every((name) => names.has(name));
+};
 
 const app = await electron.launch({
   executablePath: electronPath,
@@ -125,13 +129,19 @@ try {
         row.verified = true;
         continue;
       }
-      const oldPaths = current
-        .filter((item) => item.kind === "file" && releaseName.test(item.name))
+      const currentReleaseFiles = current
+        .filter((item) => item.kind === "file" && releaseName.test(item.name));
+      const partialCurrentPaths = currentReleaseFiles
+        .filter((item) => expectedNames.has(item.name))
         .map((item) => item.path);
-      if (oldPaths.length) {
+      const oldPaths = currentReleaseFiles
+        .filter((item) => !expectedNames.has(item.name))
+        .map((item) => item.path);
+      // Keep the previous complete release available until both new assets are visible.
+      if (partialCurrentPaths.length) {
         await window.evaluate(
           ({ providerId, remotePaths }) => window.triCloud.deleteRemote({ providerId, remotePaths }),
-          { providerId: target.providerId, remotePaths: oldPaths },
+          { providerId: target.providerId, remotePaths: partialCurrentPaths },
         );
       }
       const terminal = await window.evaluate(
@@ -162,6 +172,24 @@ try {
       const failures = terminal.filter((event) => event.status !== "success");
       if (failures.length) throw new Error(`${target.providerId} 账号 ${target.accountIndex} 上传失败：${failures.map((item) => item.message).join("；")}`);
 
+      let afterUpload = [];
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        afterUpload = await window.evaluate(
+          ({ providerId, remotePath }) => window.triCloud.listRemote(providerId, remotePath),
+          target,
+        );
+        if (containsExpectedSet(afterUpload)) break;
+        await delay(2_000);
+      }
+      if (!containsExpectedSet(afterUpload)) {
+        throw new Error(`${target.providerId} 账号 ${target.accountIndex} 上传后校验失败`);
+      }
+      if (oldPaths.length) {
+        await window.evaluate(
+          ({ providerId, remotePaths }) => window.triCloud.deleteRemote({ providerId, remotePaths }),
+          { providerId: target.providerId, remotePaths: oldPaths },
+        );
+      }
       let after = [];
       for (let attempt = 0; attempt < 15; attempt += 1) {
         after = await window.evaluate(
@@ -171,9 +199,7 @@ try {
         if (exactReleaseSet(after)) break;
         await delay(2_000);
       }
-      if (!exactReleaseSet(after)) {
-        throw new Error(`${target.providerId} 账号 ${target.accountIndex} 上传后校验失败`);
-      }
+      if (!exactReleaseSet(after)) throw new Error(`${target.providerId} 账号 ${target.accountIndex} 旧版清理后校验失败`);
       row.deleted = oldPaths;
       row.uploaded = [...expectedNames];
       row.verified = true;
