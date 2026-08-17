@@ -42,6 +42,21 @@ class ScrambleEngine {
     };
   }
 
+  static ImageRaster transformRowColumn(
+    ImageRaster source,
+    int seed, {
+    required bool reverse,
+  }) {
+    if (!reverse) {
+      return _columnShift(
+        _rowShift(source, seed, false),
+        seed ^ 0x4a31d2c7,
+        false,
+      );
+    }
+    return _rowShift(_columnShift(source, seed ^ 0x4a31d2c7, true), seed, true);
+  }
+
   static ImageRaster _blockShuffle(ImageRaster source, int seed, bool reverse) {
     final blockSize = 24 + (seed.abs() % 41);
     final groups = <String, List<_Tile>>{};

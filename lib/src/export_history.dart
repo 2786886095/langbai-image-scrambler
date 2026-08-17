@@ -4,6 +4,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'models.dart';
 
+enum ExportHistoryKind {
+  videoScramble,
+  videoRestore,
+  prismGenerate,
+  prismRestore,
+  cloakGenerate,
+  cloakExtract,
+}
+
 class ExportArtifact {
   const ExportArtifact({
     required this.location,
@@ -41,6 +50,7 @@ class ExportHistoryEntry {
     required this.targetLabel,
     required this.artifacts,
     required this.createdDirectories,
+    this.kind,
     this.revealLocation,
     this.revealIsDirectory = false,
     this.undoneAt,
@@ -57,6 +67,7 @@ class ExportHistoryEntry {
   final String targetLabel;
   final List<ExportArtifact> artifacts;
   final List<String> createdDirectories;
+  final ExportHistoryKind? kind;
   final String? revealLocation;
   final bool revealIsDirectory;
   final DateTime? undoneAt;
@@ -87,6 +98,7 @@ class ExportHistoryEntry {
         targetLabel: targetLabel,
         artifacts: artifacts,
         createdDirectories: createdDirectories,
+        kind: kind,
         revealLocation: revealLocation,
         revealIsDirectory: revealIsDirectory,
         undoneAt: time,
@@ -104,6 +116,7 @@ class ExportHistoryEntry {
     'targetLabel': targetLabel,
     'artifacts': artifacts.map((item) => item.toJson()).toList(),
     'createdDirectories': createdDirectories,
+    'kind': kind?.name,
     'revealLocation': revealLocation,
     'revealIsDirectory': revealIsDirectory,
     'undoneAt': undoneAt?.toIso8601String(),
@@ -140,6 +153,9 @@ class ExportHistoryEntry {
           (json['createdDirectories'] as List<dynamic>? ?? const [])
               .whereType<String>()
               .toList(growable: false),
+      kind: ExportHistoryKind.values
+          .where((item) => item.name == json['kind'])
+          .firstOrNull,
       revealLocation: json['revealLocation'] as String?,
       revealIsDirectory: json['revealIsDirectory'] as bool? ?? false,
       undoneAt: DateTime.tryParse(json['undoneAt'] as String? ?? ''),

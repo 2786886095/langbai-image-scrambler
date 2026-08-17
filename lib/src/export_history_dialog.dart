@@ -324,25 +324,44 @@ class _HistoryCard extends StatelessWidget {
     );
   }
 
-  IconData get _icon => entry.workspaceType == WorkspaceType.mixed
-      ? Icons.folder_zip_outlined
-      : entry.workspaceType == WorkspaceType.text
-      ? Icons.description_outlined
-      : entry.mode == ProcessMode.restore
-      ? Icons.auto_fix_high_outlined
-      : Icons.grid_view_rounded;
+  IconData get _icon => switch (entry.kind) {
+    ExportHistoryKind.videoScramble ||
+    ExportHistoryKind.videoRestore => Icons.video_file_outlined,
+    ExportHistoryKind.prismGenerate ||
+    ExportHistoryKind.prismRestore => Icons.blur_on_rounded,
+    ExportHistoryKind.cloakGenerate ||
+    ExportHistoryKind.cloakExtract => Icons.layers_outlined,
+    null =>
+      entry.workspaceType == WorkspaceType.mixed
+          ? Icons.folder_zip_outlined
+          : entry.workspaceType == WorkspaceType.text
+          ? Icons.description_outlined
+          : entry.mode == ProcessMode.restore
+          ? Icons.auto_fix_high_outlined
+          : Icons.grid_view_rounded,
+  };
 
-  String get _title => switch ((entry.workspaceType, entry.mode)) {
-    (WorkspaceType.image, ProcessMode.scramble) =>
-      strings['historyImageScramble'],
-    (WorkspaceType.image, ProcessMode.restore) =>
-      strings['historyImageRestore'],
-    (WorkspaceType.text, ProcessMode.scramble) => strings['historyTextEncode'],
-    (WorkspaceType.text, ProcessMode.restore) => strings['historyTextRestore'],
-    (WorkspaceType.mixed, ProcessMode.scramble) =>
-      strings['historyMixedScramble'],
-    (WorkspaceType.mixed, ProcessMode.restore) =>
-      strings['historyMixedRestore'],
+  String get _title => switch (entry.kind) {
+    ExportHistoryKind.videoScramble => strings['historyVideoScramble'],
+    ExportHistoryKind.videoRestore => strings['historyVideoRestore'],
+    ExportHistoryKind.prismGenerate => strings['historyPrismGenerate'],
+    ExportHistoryKind.prismRestore => strings['historyPrismRestore'],
+    ExportHistoryKind.cloakGenerate => strings['historyCloakGenerate'],
+    ExportHistoryKind.cloakExtract => strings['historyCloakExtract'],
+    null => switch ((entry.workspaceType, entry.mode)) {
+      (WorkspaceType.image, ProcessMode.scramble) =>
+        strings['historyImageScramble'],
+      (WorkspaceType.image, ProcessMode.restore) =>
+        strings['historyImageRestore'],
+      (WorkspaceType.text, ProcessMode.scramble) =>
+        strings['historyTextEncode'],
+      (WorkspaceType.text, ProcessMode.restore) =>
+        strings['historyTextRestore'],
+      (WorkspaceType.mixed, ProcessMode.scramble) =>
+        strings['historyMixedScramble'],
+      (WorkspaceType.mixed, ProcessMode.restore) =>
+        strings['historyMixedRestore'],
+    },
   };
 
   String _formatTime(DateTime time) {

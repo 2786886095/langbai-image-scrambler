@@ -22,7 +22,8 @@ void main() {
     await history.add(
       ExportHistoryEntry(
         id: 'history-1',
-        createdAt: DateTime(2026, 8, 8, 20, 30),
+        // Keep the fixture inside the default seven-day retention window.
+        createdAt: DateTime.now(),
         workspaceType: WorkspaceType.image,
         mode: ProcessMode.scramble,
         targetLabel: r'D:\输出\画集（1）',

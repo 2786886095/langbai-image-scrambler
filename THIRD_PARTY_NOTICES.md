@@ -1,5 +1,15 @@
 # Third-party notices
 
+## CryptoImage 趣味视觉算法
+
+“光棱坦克”以及“幻影坦克 v0–v5”的交互与数据格式参考并移植自：
+
+- [luminousott/cryptoimage](https://github.com/luminousott/cryptoimage)
+- 参考提交：`e10e9db750bbe939e93b9a5da08b6580a744a70e`
+
+该项目采用 MIT License，Copyright (c) 2026 luminousott。移植代码已按
+Flutter/Dart、Windows 和 Android 的本地文件处理方式重写。
+
 ## 小番茄图片混淆兼容算法
 
 `cherry_tomato_gilbert` 的兼容行为依据以下 MIT 项目实现并通过独立映射夹具验证：
@@ -27,5 +37,12 @@
 - Windows 发布包同时内置官方 7-Zip 26.02 的 `7z.exe` 与 `7z.dll`，用于 ZIP、7Z、RAR 导入和旧式 GBK ZIP 文件名兼容。7-Zip 主体采用 GNU LGPL，部分代码采用 BSD 3-Clause，并包含 unRAR 解压限制；许可证原文位于 `assets/bin/windows/7z-license.txt`。`7z.exe` SHA-256 为 `83967f1b02b43c4efeda302795722c809e0e81b8307de73558d10484d5676a7d`，`7z.dll` SHA-256 为 `69fd4df057985c40e510e2fac182881c7f85e90aa13ec703f763a8fdb2ce61f8`。
 
 RAR 仅用于导入和解压；应用不生成 RAR。
+
+## FFmpeg 视频处理引擎
+
+- Windows 内置 Gyan FFmpeg 9.0.1 Essentials 静态构建压缩包，用于逐帧提取、H.264/AAC 合成与音轨反转；该构建采用 GPLv3。
+- Android 使用 `io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1` 提供设备 ABI 对应的 FFmpeg 可执行文件。
+- Android 同时使用 `io.github.junkfood02.youtubedl-android:library:0.18.1` 内置 yt-dlp 运行环境，实现手机端本地分享链接解析与下载；组件来源为 [youtubedl-android](https://github.com/yausername/youtubedl-android)。
+- Windows 压缩包 SHA-256 为 `49a73bdf0850092a252ac4641d922f3048d63ed113e196cc65ce1e4f7fb33e85`；许可证位于 `assets/bin/windows/ffmpeg-license.txt`。
 
 其余 Flutter/Dart 依赖的许可证可通过对应包仓库或发布包中的许可证清单查看。

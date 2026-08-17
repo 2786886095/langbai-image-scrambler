@@ -38,6 +38,8 @@ class MainActivity : FlutterActivity() {
     private val pendingShares = ArrayDeque<Map<String, Any>>()
     private val archiveExtractor by lazy { ArchiveExtractor(cacheDir, contentResolver) }
     private val archiveCreator by lazy { ArchiveCreator(cacheDir) }
+    private val videoFfmpeg by lazy { VideoFfmpegBridge(this) }
+    private val videoLinkBridge by lazy { VideoLinkBridge(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -97,6 +99,15 @@ class MainActivity : FlutterActivity() {
                     call.argument<String>("outputPath")!!,
                     entries,
                     call.argument<String>("password"),
+                )
+            }
+            "runFfmpeg" -> runInBackground(result) {
+                val arguments = call.argument<List<String>>("arguments") ?: emptyList()
+                videoFfmpeg.run(arguments)
+            }
+            "resolveVideoLink" -> runInBackground(result) {
+                videoLinkBridge.resolveAndDownload(
+                    call.argument<String>("url")?.trim().orEmpty(),
                 )
             }
             "copyUriToCache" -> runInBackground(result) {

@@ -69,6 +69,7 @@ void main() {
         createdDirectories: const ['folder'],
         revealLocation: 'folder',
         revealIsDirectory: true,
+        kind: ExportHistoryKind.videoScramble,
       ),
     );
 
@@ -79,6 +80,10 @@ void main() {
     expect(reopened.entries.single.id, 'saved');
     expect(reopened.entries.single.locationToReveal, 'folder');
     expect(reopened.entries.single.locationIsDirectory, isTrue);
+    expect(
+      reopened.entries.single.kind,
+      ExportHistoryKind.videoScramble,
+    );
     await reopened.markUndone(
       'saved',
       const UndoResult(deleted: 1, modified: 0),

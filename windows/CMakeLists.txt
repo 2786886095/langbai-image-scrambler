@@ -105,6 +105,14 @@ install(CODE "
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
+# FFmpeg is a Windows-only optional engine. Install it outside flutter_assets so
+# the 34 MB archive is not bundled into the Android APK.
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/ffmpeg.7z"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../assets/bin/windows/ffmpeg-license.txt"
+  DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/video"
+  COMPONENT Runtime)
+
 # Install the AOT library on non-Debug builds only.
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release

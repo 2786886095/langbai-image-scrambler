@@ -428,6 +428,38 @@ class AppController extends ChangeNotifier {
     if (removed > 0) notifyListeners();
   }
 
+  Future<void> recordExternalExport({
+    required ExportHistoryKind kind,
+    required ProcessMode mode,
+    required String location,
+    required String displayName,
+    required String sha256,
+    required int sizeBytes,
+  }) async {
+    final entry = ExportHistoryEntry(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      createdAt: DateTime.now(),
+      workspaceType: WorkspaceType.image,
+      mode: mode,
+      targetLabel: location,
+      artifacts: [
+        ExportArtifact(
+          location: location,
+          displayName: displayName,
+          sha256: sha256,
+          sizeBytes: sizeBytes,
+        ),
+      ],
+      createdDirectories: const [],
+      revealLocation: location,
+      kind: kind,
+    );
+    await _historyStore.add(entry);
+    lastExportHistoryId = entry.id;
+    await _historyStore.cleanup(_settings.historyRetentionDays);
+    notifyListeners();
+  }
+
   Future<UndoResult> undoExport(ExportHistoryEntry entry) async {
     if (!entry.canUndo || undoingHistoryId != null || isProcessing) {
       return const UndoResult();

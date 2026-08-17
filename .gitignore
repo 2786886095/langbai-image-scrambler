@@ -51,3 +51,4 @@ app.*.map.json
 /tooling_cherry_reference.py
 /tooling/vs-buildtools-install.log
 /tooling/vs-buildtools-install.exit
+assets/bin/windows/ffmpeg.exe

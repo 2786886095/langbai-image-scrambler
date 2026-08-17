@@ -4,16 +4,21 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_controller.dart';
 import 'app_settings.dart';
 import 'app_strings.dart';
 import 'export_history_dialog.dart';
+import 'fun_tools/fun_tools_screen.dart';
 import 'models.dart';
 import 'settings_dialog.dart';
 import 'shared_import_dialog.dart';
 import 'text_processor.dart';
 import 'update_service.dart';
+import 'video/video_screen.dart';
+
+enum _AppSection { workspace, video, funTools }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -26,6 +31,13 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _dragging = false;
   bool _updateScheduled = false;
   bool _sharedDialogScheduled = false;
+  _AppSection _section = _AppSection.workspace;
+
+  @override
+  void initState() {
+    super.initState();
+    _restoreSection();
+  }
 
   @override
   void didChangeDependencies() {
@@ -66,7 +78,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          strings['appName'],
+                          _section == _AppSection.workspace
+                              ? strings['appName']
+                              : _section == _AppSection.video
+                              ? strings['videoTools']
+                              : strings['funTools'],
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -105,27 +121,64 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
       body: Row(
         children: [
-          if (desktop) _Sidebar(strings: strings),
-          Expanded(
-            child: DropTarget(
-              enable: desktop,
-              onDragEntered: (_) => setState(() => _dragging = true),
-              onDragExited: (_) => setState(() => _dragging = false),
-              onDragDone: (details) async {
-                setState(() => _dragging = false);
-                await context.read<AppController>().importDropped(
-                  details.files,
-                );
-              },
-              child: _Workspace(
-                strings: strings,
-                dragging: _dragging,
-                desktop: desktop,
-              ),
+          if (desktop)
+            _Sidebar(
+              strings: strings,
+              section: _section,
+              onSectionChanged: _setSection,
             ),
+          Expanded(
+            child: switch (_section) {
+              _AppSection.workspace => DropTarget(
+                enable: desktop,
+                onDragEntered: (_) => setState(() => _dragging = true),
+                onDragExited: (_) => setState(() => _dragging = false),
+                onDragDone: (details) async {
+                  setState(() => _dragging = false);
+                  await context.read<AppController>().importDropped(
+                    details.files,
+                  );
+                },
+                child: _Workspace(
+                  strings: strings,
+                  dragging: _dragging,
+                  desktop: desktop,
+                ),
+              ),
+              _AppSection.video => VideoScreen(
+                traditional: settings.language == AppLanguage.traditional,
+              ),
+              _AppSection.funTools => FunToolsScreen(
+                traditional: settings.language == AppLanguage.traditional,
+              ),
+            },
           ),
         ],
       ),
+      bottomNavigationBar: desktop
+          ? null
+          : NavigationBar(
+              selectedIndex: _section.index,
+              onDestinationSelected: (index) =>
+                  _setSection(_AppSection.values[index]),
+              destinations: [
+                NavigationDestination(
+                  icon: const Icon(Icons.dashboard_customize_outlined),
+                  selectedIcon: const Icon(Icons.dashboard_customize_rounded),
+                  label: strings['imageAndText'],
+                ),
+                NavigationDestination(
+                  icon: const Icon(Icons.video_file_outlined),
+                  selectedIcon: const Icon(Icons.video_file_rounded),
+                  label: strings['videoShort'],
+                ),
+                NavigationDestination(
+                  icon: const Icon(Icons.auto_awesome_outlined),
+                  selectedIcon: const Icon(Icons.auto_awesome_rounded),
+                  label: strings['funTools'],
+                ),
+              ],
+            ),
     );
   }
 
@@ -143,12 +196,38 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _sharedDialogScheduled = false);
     });
   }
+
+  Future<void> _restoreSection() async {
+    final preferences = await SharedPreferences.getInstance();
+    final saved = preferences.getString('home_app_section');
+    if (!mounted) return;
+    setState(() {
+      _section = _AppSection.values.firstWhere(
+        (value) => value.name == saved,
+        orElse: () => _AppSection.workspace,
+      );
+    });
+  }
+
+  void _setSection(_AppSection value) {
+    if (_section == value) return;
+    setState(() => _section = value);
+    SharedPreferences.getInstance().then(
+      (preferences) => preferences.setString('home_app_section', value.name),
+    );
+  }
 }
 
 class _Sidebar extends StatelessWidget {
-  const _Sidebar({required this.strings});
+  const _Sidebar({
+    required this.strings,
+    required this.section,
+    required this.onSectionChanged,
+  });
 
   final AppStrings strings;
+  final _AppSection section;
+  final ValueChanged<_AppSection> onSectionChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -200,8 +279,22 @@ class _Sidebar extends StatelessWidget {
               _SidebarItem(
                 icon: Icons.dashboard_customize_outlined,
                 label: strings['workspace'],
-                selected: true,
-                onTap: () {},
+                selected: section == _AppSection.workspace,
+                onTap: () => onSectionChanged(_AppSection.workspace),
+              ),
+              const SizedBox(height: 8),
+              _SidebarItem(
+                icon: Icons.video_file_outlined,
+                label: strings['videoTools'],
+                selected: section == _AppSection.video,
+                onTap: () => onSectionChanged(_AppSection.video),
+              ),
+              const SizedBox(height: 8),
+              _SidebarItem(
+                icon: Icons.auto_awesome_outlined,
+                label: strings['funTools'],
+                selected: section == _AppSection.funTools,
+                onTap: () => onSectionChanged(_AppSection.funTools),
               ),
               const SizedBox(height: 8),
               _SidebarItem(
